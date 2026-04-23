@@ -14,13 +14,13 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import 'package:vitalpath/models/appointment_model.dart';
+import 'package:vitalpath/models/doctor_model.dart';
 import 'package:vitalpath/models/governance_level.dart';
-import 'package:vitalpath/screens/my_doctors_screen.dart';
 
 typedef OnAppointmentSubmit = void Function(AppointmentModel appointment);
 
 class RequestAppointmentBottomSheet extends StatefulWidget {
-  final DoctorProfile doctor;
+  final DoctorModel doctor;
   final String patientId;
   final OnAppointmentSubmit onSubmit;
 
@@ -33,7 +33,7 @@ class RequestAppointmentBottomSheet extends StatefulWidget {
 
   static Future<void> show(
     BuildContext context, {
-    required DoctorProfile doctor,
+    required DoctorModel doctor,
     required String patientId,
     required OnAppointmentSubmit onSubmit,
   }) {

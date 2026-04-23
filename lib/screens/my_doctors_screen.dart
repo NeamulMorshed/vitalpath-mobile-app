@@ -1,145 +1,409 @@
 /// my_doctors_screen.dart
 /// ─────────────────────────────────────────────────────────────────────────────
-/// "My Doctors" screen accessed from the Profile tab.
+/// "My Doctors" screen — Profile tab entry point for the doctor-patient sync.
 ///
-/// Blueprint §1.1: "Patients request appointments through the 'My Doctors'
-/// interface in their Profile."
+/// Blueprint §1.1 / §7:
+///   • Searchable list of linked doctors (name, specialty, clinic, sync status).
+///   • 'Sync New Doctor' button → [SyncHubBottomSheet] (code or QR).
+///   • Connected doctors float to the top with a 'Connected' badge.
+///   • Shimmer skeleton while loading from Firebase.
+///   • 'Request Appointment' CTA per card → [RequestAppointmentBottomSheet].
+///   • 'Unsync' safety protocol: confirmation dialog with governance warning.
 ///
-/// Features:
-///   • Lists all doctors the patient has linked (via QR/6-digit sync).
-///   • Each doctor card shows: name, specialty, sync status.
-///   • "Request Appointment" CTA per doctor → opens [RequestAppointmentBottomSheet].
-///   • Upcoming confirmed appointments shown as a sub-section below each doctor.
-///   • 60/120fps: RepaintBoundary per doctor card, ListView.builder (lazy).
+/// Performance:
+///   • [ListView.builder] — lazy, never builds off-screen cards.
+///   • [RepaintBoundary] per card — scroll and shimmer never trigger full repaints.
+///   • Page transition: [PageRouteBuilder] with [FadeTransition] achieves
+///     60/120fps entry by avoiding MaterialPageRoute's heavy scaffold animation.
 /// ─────────────────────────────────────────────────────────────────────────────
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import 'package:vitalpath/models/appointment_model.dart';
+import 'package:vitalpath/models/doctor_model.dart';
 import 'package:vitalpath/providers/appointment_provider.dart';
+import 'package:vitalpath/providers/doctor_provider.dart';
+import 'package:vitalpath/services/haptic_service.dart';
 import 'package:vitalpath/widgets/appointment_card_widget.dart';
+import 'package:vitalpath/widgets/doctor_shimmer_widget.dart';
 import 'package:vitalpath/widgets/request_appointment_bottom_sheet.dart';
+import 'package:vitalpath/widgets/sync_hub_bottom_sheet.dart';
 
-// ── Simple DoctorProfile model (in production this comes from Firestore) ──────
-class DoctorProfile {
-  final String uid;
-  final String name;
-  final String specialty;
-  final String? avatarUrl;
-  final bool isSynced;
-
-  const DoctorProfile({
-    required this.uid,
-    required this.name,
-    required this.specialty,
-    this.avatarUrl,
-    this.isSynced = true,
-  });
-}
-
-class MyDoctorsScreen extends StatelessWidget {
-  // In production, this list is loaded from Firestore /users/{uid}/linked_doctors.
-  // Passed as a constructor param here for testability.
-  final List<DoctorProfile> doctors;
+class MyDoctorsScreen extends StatefulWidget {
   final String patientId;
 
-  const MyDoctorsScreen({
-    super.key,
-    required this.doctors,
-    required this.patientId,
-  });
+  const MyDoctorsScreen({super.key, required this.patientId});
+
+  /// 60/120fps-friendly route — FadeTransition avoids the default slide overhead.
+  static PageRoute<void> route(String patientId) {
+    return PageRouteBuilder<void>(
+      pageBuilder: (_, __, ___) => ChangeNotifierProvider(
+        create: (_) => DoctorProvider(),
+        child: MyDoctorsScreen(patientId: patientId),
+      ),
+      transitionDuration: const Duration(milliseconds: 220),
+      transitionsBuilder: (_, anim, __, child) =>
+          FadeTransition(opacity: anim, child: child),
+    );
+  }
+
+  @override
+  State<MyDoctorsScreen> createState() => _MyDoctorsScreenState();
+}
+
+class _MyDoctorsScreenState extends State<MyDoctorsScreen> {
+  final _searchCtrl = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl.addListener(() {
+      setState(() => _searchQuery = _searchCtrl.text);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<DoctorProvider>().loadDoctors(widget.patientId);
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF6F7FB),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              size: 20, color: Color(0xFF1A1A2E)),
-          onPressed: () => Navigator.of(context).pop(),
+      appBar: _buildAppBar(context),
+      body: Consumer<DoctorProvider>(
+        builder: (context, provider, _) {
+          if (provider.isLoading) {
+            return const DoctorShimmerList(count: 4);
+          }
+
+          final doctors = provider.filtered(_searchQuery);
+
+          return CustomScrollView(
+            physics: const BouncingScrollPhysics(),
+            slivers: [
+              // ── Search field ───────────────────────────────────────────────
+              SliverToBoxAdapter(child: _buildSearchBar()),
+
+              // ── Connected count strip ──────────────────────────────────────
+              if (provider.connectedCount > 0)
+                SliverToBoxAdapter(
+                  child: _ConnectedStrip(count: provider.connectedCount),
+                ),
+
+              // ── Empty state ────────────────────────────────────────────────
+              if (doctors.isEmpty)
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: _searchQuery.isNotEmpty
+                      ? _NoResultsState(query: _searchQuery)
+                      : _EmptyDoctorsState(
+                          patientId: widget.patientId,
+                          provider: provider,
+                        ),
+                ),
+
+              // ── Doctor cards ───────────────────────────────────────────────
+              if (doctors.isNotEmpty)
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) {
+                        final doctor = doctors[index];
+                        return RepaintBoundary(
+                          child: _DoctorCard(
+                            doctor: doctor,
+                            patientId: widget.patientId,
+                            onUnsync: () => _confirmUnsync(context, doctor),
+                          ),
+                        );
+                      },
+                      childCount: doctors.length,
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar(BuildContext context) {
+    return AppBar(
+      backgroundColor: Colors.white,
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back_ios_new_rounded,
+            size: 20, color: Color(0xFF1A1A2E)),
+        onPressed: () => Navigator.of(context).pop(),
+      ),
+      title: const Text(
+        'My Doctors',
+        style: TextStyle(
+          fontSize: 20,
+          fontWeight: FontWeight.w800,
+          color: Color(0xFF1A1A2E),
         ),
-        title: const Text(
-          'My Doctors',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w800,
-            color: Color(0xFF1A1A2E),
+      ),
+      actions: [
+        Consumer<DoctorProvider>(
+          builder: (_, provider, __) => TextButton.icon(
+            onPressed: provider.isSyncing
+                ? null
+                : () => SyncHubBottomSheet.show(
+                      context,
+                      doctorProvider: provider,
+                      patientId: widget.patientId,
+                      onSyncSuccess: (_) => HapticService().goalSuccess(),
+                    ),
+            icon: const Icon(Icons.add_rounded,
+                size: 18, color: Color(0xFF00897B)),
+            label: const Text(
+              'Sync',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF00897B),
+              ),
+            ),
           ),
         ),
+        const SizedBox(width: 8),
+      ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+      child: TextField(
+        controller: _searchCtrl,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          hintText: 'Search by name, specialty or clinic…',
+          hintStyle:
+              const TextStyle(fontSize: 14, color: Color(0xFFBDBDBD)),
+          prefixIcon: const Icon(Icons.search_rounded,
+              color: Color(0xFF9E9E9E), size: 20),
+          suffixIcon: _searchQuery.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.close_rounded,
+                      color: Color(0xFF9E9E9E), size: 18),
+                  onPressed: () {
+                    _searchCtrl.clear();
+                    HapticFeedback.selectionClick();
+                  },
+                )
+              : null,
+          filled: true,
+          fillColor: Colors.white,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFFE8E8EE)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFFE8E8EE)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide:
+                const BorderSide(color: Color(0xFF00897B), width: 1.5),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Unsync confirmation dialog ─────────────────────────────────────────────
+  Future<void> _confirmUnsync(BuildContext context, DoctorModel doctor) async {
+    HapticFeedback.heavyImpact();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.link_off_rounded,
+                  color: Color(0xFFE53935), size: 20),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Unsync Doctor?',
+                style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF1A1A2E)),
+              ),
+            ),
+          ],
+        ),
+        content: RichText(
+          text: TextSpan(
+            style: const TextStyle(
+                fontSize: 14, color: Color(0xFF555566), height: 1.6),
+            children: [
+              const TextSpan(
+                text:
+                    'Unsyncing will stop automatic updates for verified prescriptions. ',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              TextSpan(
+                text: 'Are you sure you want to remove Dr. ${doctor.name}?',
+              ),
+            ],
+          ),
+        ),
+        actionsPadding:
+            const EdgeInsets.fromLTRB(16, 0, 16, 16),
         actions: [
-          // Sync via QR / 6-digit code — wired in Phase 2.
-          IconButton(
-            icon: const Icon(Icons.qr_code_scanner_rounded,
-                color: Color(0xFF00897B)),
-            tooltip: 'Sync with a new doctor',
-            onPressed: () => HapticFeedback.lightImpact(),
+          OutlinedButton(
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              Navigator.of(ctx).pop(false);
+            },
+            style: OutlinedButton.styleFrom(
+              foregroundColor: const Color(0xFF1A1A2E),
+              side: const BorderSide(color: Color(0xFFE0E0E0)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 20, vertical: 12),
+            ),
+            child: const Text('Keep Connection',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          FilledButton(
+            onPressed: () {
+              HapticFeedback.heavyImpact();
+              Navigator.of(ctx).pop(true);
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFE53935),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 20, vertical: 12),
+            ),
+            child: const Text('Unsync',
+                style: TextStyle(fontWeight: FontWeight.w700)),
           ),
         ],
       ),
-      body: doctors.isEmpty
-          ? const _EmptyDoctorsState()
-          : ListView.builder(
-              padding: const EdgeInsets.fromLTRB(0, 12, 0, 32),
-              physics: const BouncingScrollPhysics(),
-              itemCount: doctors.length,
-              itemBuilder: (context, index) {
-                final doctor = doctors[index];
-                return RepaintBoundary(
-                  child: _DoctorCard(
-                    doctor: doctor,
-                    patientId: patientId,
-                  ),
-                );
-              },
+    );
+
+    if (confirmed == true && mounted) {
+      await context.read<DoctorProvider>().unsyncDoctor(
+            patientId: widget.patientId,
+            doctorId: doctor.uid,
+          );
+    }
+  }
+}
+
+// ── Connected doctors strip ───────────────────────────────────────────────────
+class _ConnectedStrip extends StatelessWidget {
+  final int count;
+  const _ConnectedStrip({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+      child: Row(
+        children: [
+          const Icon(Icons.verified_rounded,
+              size: 14, color: Color(0xFF00897B)),
+          const SizedBox(width: 6),
+          Text(
+            '$count doctor${count == 1 ? '' : 's'} connected',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF00897B),
             ),
+          ),
+        ],
+      ),
     );
   }
 }
 
 // ── Doctor card ───────────────────────────────────────────────────────────────
 class _DoctorCard extends StatelessWidget {
-  final DoctorProfile doctor;
+  final DoctorModel doctor;
   final String patientId;
+  final VoidCallback onUnsync;
 
-  const _DoctorCard({required this.doctor, required this.patientId});
+  const _DoctorCard({
+    required this.doctor,
+    required this.patientId,
+    required this.onUnsync,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Consumer<AppointmentProvider>(
-      builder: (context, provider, _) {
-        // Upcoming confirmed appointments with this doctor.
-        final upcoming = provider.confirmedAppointments
+      builder: (context, apptProvider, _) {
+        final upcoming = apptProvider.confirmedAppointments
             .where((a) =>
                 a.doctorId == doctor.uid &&
                 a.displayTime.isAfter(DateTime.now()))
             .take(2)
             .toList();
 
-        return Container(
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          margin: const EdgeInsets.only(bottom: 14),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: Colors.grey[200]!, width: 1),
-            boxShadow: const [
+            border: Border.all(
+              color: doctor.isConnected
+                  ? const Color(0xFF00897B).withOpacity(0.18)
+                  : Colors.grey[200]!,
+              width: doctor.isConnected ? 1.5 : 1,
+            ),
+            boxShadow: [
               BoxShadow(
-                  color: Color(0x07000000), blurRadius: 8, offset: Offset(0, 3))
+                color: doctor.isConnected
+                    ? const Color(0xFF00897B).withOpacity(0.06)
+                    : const Color(0x07000000),
+                blurRadius: doctor.isConnected ? 12 : 8,
+                offset: const Offset(0, 3),
+              ),
             ],
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(18),
             child: Column(
               children: [
-                // ── Doctor header ───────────────────────────────────────────
+                // ── Doctor info header ──────────────────────────────────────
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
                   child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       // Avatar
                       CircleAvatar(
@@ -161,6 +425,7 @@ class _DoctorCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 14),
 
+                      // Name / specialty / clinic
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -177,38 +442,51 @@ class _DoctorCard extends StatelessWidget {
                             Text(
                               doctor.specialty,
                               style: const TextStyle(
-                                  fontSize: 13, color: Color(0xFF9E9E9E)),
+                                  fontSize: 13,
+                                  color: Color(0xFF9E9E9E)),
                             ),
+                            if (doctor.clinicName.isNotEmpty) ...[
+                              const SizedBox(height: 3),
+                              Row(
+                                children: [
+                                  const Icon(Icons.business_rounded,
+                                      size: 11,
+                                      color: Color(0xFFBDBDBD)),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    doctor.clinicName,
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Color(0xFFBDBDBD)),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                       ),
 
-                      // Sync badge
-                      if (doctor.isSynced)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE6F7F4),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.sync_rounded,
-                                  size: 12, color: Color(0xFF00897B)),
-                              SizedBox(width: 4),
-                              Text(
-                                'Synced',
+                      // Sync status badge + unsync
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          _SyncBadge(status: doctor.syncStatus),
+                          if (doctor.isConnected) ...[
+                            const SizedBox(height: 6),
+                            GestureDetector(
+                              onTap: onUnsync,
+                              child: const Text(
+                                'Unsync',
                                 style: TextStyle(
                                   fontSize: 11,
+                                  color: Color(0xFFE53935),
                                   fontWeight: FontWeight.w600,
-                                  color: Color(0xFF00897B),
                                 ),
                               ),
-                            ],
-                          ),
-                        ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -224,7 +502,7 @@ class _DoctorCard extends StatelessWidget {
                             size: 13, color: Color(0xFF9E9E9E)),
                         const SizedBox(width: 6),
                         Text(
-                          'Upcoming Appointments',
+                          'Upcoming',
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -252,11 +530,12 @@ class _DoctorCard extends StatelessWidget {
                       onSubmit: (appointment) {
                         context.read<AppointmentProvider>().requestAppointment(
                               appointment: appointment,
-                              isOnline: true, // real: inject ConnectivityService
+                              isOnline: true,
                             );
                       },
                     ),
-                    splashColor: const Color(0xFF00897B).withOpacity(0.06),
+                    splashColor:
+                        const Color(0xFF00897B).withOpacity(0.06),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 14),
@@ -288,9 +567,44 @@ class _DoctorCard extends StatelessWidget {
   }
 }
 
+// ── Sync status badge ─────────────────────────────────────────────────────────
+class _SyncBadge extends StatelessWidget {
+  final DoctorSyncStatus status;
+  const _SyncBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: status.backgroundColor,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(status.icon, size: 11, color: status.color),
+          const SizedBox(width: 4),
+          Text(
+            status.label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: status.color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Empty state ───────────────────────────────────────────────────────────────
 class _EmptyDoctorsState extends StatelessWidget {
-  const _EmptyDoctorsState();
+  final String patientId;
+  final DoctorProvider provider;
+  const _EmptyDoctorsState(
+      {required this.patientId, required this.provider});
 
   @override
   Widget build(BuildContext context) {
@@ -324,6 +638,65 @@ class _EmptyDoctorsState extends StatelessWidget {
               textAlign: TextAlign.center,
               style: TextStyle(
                   fontSize: 14, color: Color(0xFF9E9E9E), height: 1.5),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () => SyncHubBottomSheet.show(
+                context,
+                doctorProvider: provider,
+                patientId: patientId,
+                onSyncSuccess: (_) => HapticService().goalSuccess(),
+              ),
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: const Text('Sync a Doctor',
+                  style: TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w700)),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF00897B),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 14),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── No search results ─────────────────────────────────────────────────────────
+class _NoResultsState extends StatelessWidget {
+  final String query;
+  const _NoResultsState({required this.query});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.search_off_rounded,
+                size: 40, color: Color(0xFFBDBDBD)),
+            const SizedBox(height: 14),
+            Text(
+              'No results for "$query"',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1A1A2E),
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Try searching by specialty or clinic name.',
+              textAlign: TextAlign.center,
+              style:
+                  TextStyle(fontSize: 13, color: Color(0xFF9E9E9E)),
             ),
           ],
         ),

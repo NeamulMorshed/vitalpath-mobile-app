@@ -313,6 +313,31 @@ service cloud.firestore {
 
 
     // ─────────────────────────────────────────────────────────────────────────
+    // LINKED DOCTORS (sub-collection) — Blueprint §1.1 / §7
+    // Path: /users/{userId}/linked_doctors/{doctorId}
+    //
+    // Patients can read/write their own linked_doctors list.
+    // Doctors cannot modify a patient's linked list (write is patient-only).
+    // ─────────────────────────────────────────────────────────────────────────
+    match /users/{userId}/linked_doctors/{doctorId} {
+      allow read, write: if isOwner(userId);
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DOCTORS DIRECTORY — Blueprint §1.1 / §7
+    // Path: /doctors/{doctorId}
+    //
+    // Any authenticated patient may read a doctor profile to validate a sync
+    // code. Writes are exclusively via Admin SDK (doctor onboarding flow).
+    // ─────────────────────────────────────────────────────────────────────────
+    match /doctors/{doctorId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
     // DEFAULT: deny everything not explicitly matched above.
     // ─────────────────────────────────────────────────────────────────────────
     match /{document=**} {
