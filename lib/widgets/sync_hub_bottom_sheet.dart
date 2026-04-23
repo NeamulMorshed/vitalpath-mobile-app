@@ -30,6 +30,7 @@ import 'package:flutter/services.dart';
 
 import 'package:vitalpath/models/doctor_model.dart';
 import 'package:vitalpath/providers/doctor_provider.dart';
+import 'package:vitalpath/services/doctor_sync_service.dart';
 import 'package:vitalpath/services/haptic_service.dart';
 
 // ── Public entry point ────────────────────────────────────────────────────────

@@ -24,7 +24,6 @@ import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
-import 'package:vitalpath/models/governance_level.dart';
 import 'package:vitalpath/models/prescription_model.dart';
 
 // ── Typedef for the Firestore save/delete callbacks injected by the repository ─

@@ -30,6 +30,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
 import 'package:vitalpath/models/appointment_model.dart';
 import 'package:vitalpath/models/prescription_model.dart';
@@ -118,10 +119,18 @@ class DashboardProvider extends ChangeNotifier {
     _completedMedicineIds[medicineId] = true;
     notifyListeners();
 
+    // Resolve prescription to supply required logging fields.
+    final rx = _prescriptions.allPrescriptions
+        .where((p) => p.id == original.prescriptionId)
+        .firstOrNull;
+
     try {
       await _logger.logDose(
+        patientId: rx?.patientId ?? '',
         medicineId: medicineId,
         medicineName: original.title,
+        dosage: rx?.dosage ?? 0.0,
+        unit: rx?.unit.label ?? '',
         isOnline: isOnline,
         forceOverride: forceOverride,
       );
@@ -171,7 +180,7 @@ class DashboardProvider extends ChangeNotifier {
     final entries = <TimelineEntry>[];
 
     // ── 1. Medicine entries ───────────────────────────────────────────────
-    for (final rx in _prescriptions.activePrescriptions) {
+    for (final rx in _prescriptions.allPrescriptions) {
       final slots = _doseTimesFor(rx);
       for (final slot in slots) {
         final scheduledAt = DateTime(

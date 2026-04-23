@@ -144,7 +144,7 @@ class DoctorSyncService {
 
     try {
       if (_queryFn != null) {
-        final results = await _queryFn!(
+        final results = await _queryFn(
           collection: 'doctors',
           field: 'sync_code',
           value: sanitised,
@@ -210,7 +210,7 @@ class DoctorSyncService {
 
     try {
       if (_writeFn != null) {
-        await _writeFn!(
+        await _writeFn(
           path: 'users/$patientId/linked_doctors/${doctor.uid}',
           data: linked.toJson(),
         );
@@ -244,7 +244,7 @@ class DoctorSyncService {
   }) async {
     try {
       if (_deleteFn != null) {
-        await _deleteFn!(
+        await _deleteFn(
           path: 'users/$patientId/linked_doctors/$doctorId',
         );
       } else {
@@ -274,7 +274,7 @@ class DoctorSyncService {
   /// ```
   Stream<List<DoctorModel>> streamLinkedDoctors(String patientId) {
     if (_streamFn != null) {
-      return _streamFn!(
+      return _streamFn(
         collection: 'users/$patientId/linked_doctors',
       ).map((docs) => docs.map(DoctorModel.fromJson).toList());
     }

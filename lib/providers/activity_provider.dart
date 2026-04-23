@@ -156,7 +156,7 @@ class ActivityProvider extends ChangeNotifier {
 
   Future<void> _loadPrescribed(String patientId) async {
     if (_loadPrescribedFn != null) {
-      _prescribed = await _loadPrescribedFn!(patientId);
+      _prescribed = await _loadPrescribedFn(patientId);
     } else {
       // Debug stub: one sample prescribed activity.
       await Future.delayed(const Duration(milliseconds: 400));
@@ -186,7 +186,7 @@ class ActivityProvider extends ChangeNotifier {
 
   Future<void> _loadWalkHistory(String patientId) async {
     if (_loadWalkHistoryFn != null) {
-      _walkHistory = await _loadWalkHistoryFn!(patientId);
+      _walkHistory = await _loadWalkHistoryFn(patientId);
     } else {
       await Future.delayed(const Duration(milliseconds: 300));
       _walkHistory = kDebugMode ? _debugWalkHistory(patientId) : [];

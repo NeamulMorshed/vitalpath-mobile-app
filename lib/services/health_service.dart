@@ -87,7 +87,7 @@ class HealthService {
   static const _event   = EventChannel('com.vitalpath.health/steps');
 
   // ── Blueprint default ──────────────────────────────────────────────────────
-  static const int defaultStepGoal = 10_000;
+  static const int defaultStepGoal = 10000;
 
   // ── Permission state ───────────────────────────────────────────────────────
   bool _permissionsGranted = false;
@@ -182,14 +182,14 @@ class HealthService {
   // ── Mock mode (dev / CI) ───────────────────────────────────────────────────
   /// Returns a simulated step count stream that increments by ~50 steps every
   /// 3 seconds.  Useful for UI development without a physical device.
-  static Stream<int> mockStream({int startSteps = 4_200}) async* {
+  static Stream<int> mockStream({int startSteps = 4200}) async* {
     var steps = startSteps;
     while (true) {
       yield steps;
       await Future.delayed(const Duration(seconds: 3));
       // Simulate burst activity: +40-80 steps.
       steps += 40 + (steps % 41);
-      if (steps > defaultStepGoal + 2_000) steps = 0; // wrap for demo
+      if (steps > defaultStepGoal + 2000) steps = 0; // wrap for demo
     }
   }
 }
