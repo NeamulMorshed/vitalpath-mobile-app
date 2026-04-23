@@ -35,16 +35,30 @@ class MyDoctorsScreen extends StatefulWidget {
 
   const MyDoctorsScreen({super.key, required this.patientId});
 
-  /// 60/120fps-friendly route — FadeTransition avoids the default slide overhead.
+  /// Slide-from-right route — consistent with the Profile tab's drill-down
+  /// hierarchy. Reverse (pop) slides back right, confirming navigation depth.
   static PageRoute<void> route(String patientId) {
     return PageRouteBuilder<void>(
       pageBuilder: (_, __, ___) => ChangeNotifierProvider(
         create: (_) => DoctorProvider(),
         child: MyDoctorsScreen(patientId: patientId),
       ),
-      transitionDuration: const Duration(milliseconds: 220),
-      transitionsBuilder: (_, anim, __, child) =>
-          FadeTransition(opacity: anim, child: child),
+      transitionDuration: const Duration(milliseconds: 280),
+      reverseTransitionDuration: const Duration(milliseconds: 240),
+      transitionsBuilder: (_, anim, __, child) {
+        final curved = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1.0, 0),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        );
+      },
     );
   }
 

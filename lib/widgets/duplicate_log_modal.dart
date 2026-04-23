@@ -1,14 +1,15 @@
 /// duplicate_log_modal.dart
 /// ─────────────────────────────────────────────────────────────────────────────
-/// Critical alert shown when a patient attempts to re-log a dose within
+/// Safety check shown when a patient attempts to re-log a dose within
 /// the 15-minute lockout window (Blueprint §1.2 — The Duplicate Log).
 ///
 /// UI contract:
-///   • Deep red / critical colour scheme — unmistakably a safety warning.
+///   • Alert Red colour scheme — high-visibility but not alarming in language.
+///   • Supportive, clinical copy — protects without shaming the patient.
 ///   • Shows medicine name, last-logged time, and a live countdown.
 ///   • TWO action paths:
-///       [Primary]  "Cancel — Don't Log"  → dismisses, no action taken.
-///       [Override] "I'm Sure — Log Anyway" → calls [onForceLog] after a
+///       [Primary]  "Got It — Skip This Log"  → dismisses, no action taken.
+///       [Override] "I Need to Log Again" → calls [onForceLog] after a
 ///                   second deliberate tap (the button changes label on first
 ///                   press to prevent accidental override).
 ///   • HapticFeedback.heavyImpact() fires on show — the most insistent
@@ -142,7 +143,7 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
 
             // ── Title ───────────────────────────────────────────────────────
             const Text(
-              'Potential Double Dose',
+              'Already Logged Today',
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w800,
@@ -151,11 +152,12 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
             ),
             const SizedBox(height: 8),
             Text(
-              '${widget.exception.medicineName} was already logged at '
-              '${_timeFmt.format(widget.exception.lastLoggedAt)} today.',
+              'It looks like ${widget.exception.medicineName} was logged at '
+              '${_timeFmt.format(widget.exception.lastLoggedAt)}. '
+              'We\'re just making sure you meant to log it again.',
               textAlign: TextAlign.center,
               style: TextStyle(
-                  fontSize: 14.5, color: Colors.grey[700], height: 1.45),
+                  fontSize: 14.5, color: Colors.grey[700], height: 1.5),
             ),
             const SizedBox(height: 20),
 
@@ -187,7 +189,7 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
                         ),
                       ),
                       const Text(
-                        'until safe to re-log',
+                        'before the safe re-log window',
                         style: TextStyle(
                             fontSize: 11.5, color: Color(0xFFE57373)),
                       ),
@@ -198,19 +200,19 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
             ),
             const SizedBox(height: 24),
 
-            // ── Primary: Cancel ─────────────────────────────────────────────
+            // ── Primary: dismiss (safe path) ────────────────────────────────
             SizedBox(
               width: double.infinity,
+              height: 48,
               child: FilledButton.icon(
                 onPressed: () => Navigator.of(context).pop(),
                 icon: const Icon(Icons.check_circle_outline_rounded, size: 18),
                 label: const Text(
-                  'Cancel — Don\'t Log Again',
-                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                  'Got It — Skip This Log',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
                 ),
                 style: FilledButton.styleFrom(
                   backgroundColor: const Color(0xFF00897B),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
                 ),
@@ -219,10 +221,11 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
             const SizedBox(height: 10),
 
             // ── Override path ───────────────────────────────────────────────
-            // First press arms the button (changes label to final warning).
-            // Second press actually overrides. Prevents accidental override.
+            // First press arms the button (label changes to a final confirm).
+            // Second press executes the override. Prevents accidental taps.
             SizedBox(
               width: double.infinity,
+              height: 48,
               child: OutlinedButton.icon(
                 onPressed: () {
                   HapticFeedback.mediumImpact();
@@ -237,15 +240,15 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
                 },
                 icon: Icon(
                   _overrideArmed
-                      ? Icons.dangerous_rounded
-                      : Icons.warning_amber_rounded,
+                      ? Icons.priority_high_rounded
+                      : Icons.replay_rounded,
                   size: 17,
                   color: const Color(0xFFE53935),
                 ),
                 label: Text(
                   _overrideArmed
-                      ? 'Tap Again to Confirm Override'
-                      : 'Log Anyway (Override Guard)',
+                      ? 'Confirm — Log Again Now'
+                      : 'I Need to Log Again',
                   style: const TextStyle(
                     color: Color(0xFFE53935),
                     fontWeight: FontWeight.w600,
@@ -253,7 +256,6 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
                   ),
                 ),
                 style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 13),
                   side: BorderSide(
                     color: _overrideArmed
                         ? const Color(0xFFB71C1C)
@@ -268,7 +270,7 @@ class _DuplicateLogModalState extends State<DuplicateLogModal> {
 
             const SizedBox(height: 8),
             Text(
-              'Only override if instructed by your doctor.',
+              'Only log again if directed by your doctor or care team.',
               style: TextStyle(fontSize: 11.5, color: Colors.grey[400]),
             ),
           ],

@@ -66,9 +66,11 @@ class PrescriptionVaultScreen extends StatelessWidget {
 
               // ── Empty state ────────────────────────────────────────────
               if (!provider.isLoading && provider.totalCount == 0)
-                const SliverFillRemaining(
+                SliverFillRemaining(
                   hasScrollBody: false,
-                  child: _EmptyVaultState(),
+                  child: _EmptyVaultState(
+                    onAddPressed: () => _openAddSheet(context),
+                  ),
                 ),
 
               // ── Grouped prescription list ──────────────────────────────
@@ -336,9 +338,11 @@ class _AddFab extends StatelessWidget {
   }
 }
 
-// ── Empty state ───────────────────────────────────────────────────────────────
+// ── Smart empty state ─────────────────────────────────────────────────────────
 class _EmptyVaultState extends StatelessWidget {
-  const _EmptyVaultState();
+  final VoidCallback? onAddPressed;
+
+  const _EmptyVaultState({this.onAddPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -347,37 +351,105 @@ class _EmptyVaultState extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              color: const Color(0xFFE6F7F4),
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: const Icon(
-              Icons.medication_outlined,
-              size: 40,
-              color: Color(0xFF00897B),
-            ),
+          // Layered illustration — outer ring + icon badge.
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              Container(
+                width: 104,
+                height: 104,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE6F7F4).withOpacity(0.5),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE6F7F4),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: const Icon(
+                  Icons.medication_outlined,
+                  size: 40,
+                  color: Color(0xFF00897B),
+                ),
+              ),
+              // Small "+" badge in the corner — echoes the FAB action.
+              Positioned(
+                right: 12,
+                bottom: 12,
+                child: Container(
+                  width: 26,
+                  height: 26,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF00897B),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.add_rounded,
+                      size: 16, color: Colors.white),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 22),
+
           const Text(
-            'Your Vault is Empty',
+            'No Prescriptions Yet',
             style: TextStyle(
               fontSize: 20,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w800,
               color: Color(0xFF1A1A2E),
             ),
           ),
           const SizedBox(height: 10),
           const Text(
-            'Add your prescriptions here, or ask your doctor to sync them directly to your app.',
+            'All your prescriptions — grouped by doctor,\nright here in one secure place.',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 14.5,
               color: Color(0xFF9E9E9E),
-              height: 1.5,
+              height: 1.55,
             ),
+          ),
+          const SizedBox(height: 28),
+
+          // Primary CTA — mirrors the FAB so the action is obvious.
+          SizedBox(
+            height: 48,
+            child: FilledButton.icon(
+              onPressed: onAddPressed,
+              icon: const Icon(Icons.add_rounded, size: 18),
+              label: const Text(
+                'Add Your First Prescription',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF00897B),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // Secondary hint — surfaces the doctor-sync path.
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.sync_rounded, size: 14, color: Color(0xFFBDBDBD)),
+              SizedBox(width: 6),
+              Text(
+                'Or ask your doctor to sync them directly',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: Color(0xFFBDBDBD),
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
           ),
         ],
       ),

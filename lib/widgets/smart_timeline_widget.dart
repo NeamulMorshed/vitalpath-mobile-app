@@ -33,8 +33,10 @@ import 'package:provider/provider.dart';
 
 import 'package:vitalpath/models/timeline_entry.dart';
 import 'package:vitalpath/providers/dashboard_provider.dart';
+import 'package:vitalpath/services/haptic_service.dart';
 import 'package:vitalpath/services/medicine_logging_service.dart';
 import 'package:vitalpath/widgets/duplicate_log_modal.dart';
+import 'package:vitalpath/widgets/success_toast.dart';
 
 // ── Public SliverList widget ──────────────────────────────────────────────────
 /// Returns a [SliverList] ready to drop into a [CustomScrollView].
@@ -108,7 +110,9 @@ class _TimelineEntryCard extends StatelessWidget {
   double get _opacity {
     switch (entry.state) {
       case TimelineEntryState.completed:
-        return 0.45;
+        // 0.65 keeps completed items readable (WCAG contrast) while still
+        // visually distinct from active elevated tasks.
+        return 0.65;
       case TimelineEntryState.missed:
         return 0.72;
       default:
@@ -470,7 +474,8 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
 
   Future<void> _onTap(BuildContext context) async {
     if (_tapping) return;
-    HapticFeedback.lightImpact(); // ← synchronous, before async work
+    // Immediate tactile feedback on tap-down before the async work begins.
+    HapticFeedback.selectionClick();
 
     setState(() => _tapping = true);
 
@@ -481,7 +486,14 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
         medicineId: widget.entry.medicineId!,
         isOnline: true, // real: inject ConnectivityService
       );
-      // On success the provider notifies → this widget is rebuilt as completed.
+      if (!mounted) return;
+      // Celebratory haptic + success toast — the "win" moment.
+      HapticService().doseLogged();
+      SuccessToast.show(
+        context,
+        medicineName: widget.entry.title,
+        dose: widget.entry.subtitle,
+      );
     } on DuplicateLogException catch (ex) {
       if (!mounted) return;
       await DuplicateLogModal.show(
@@ -513,6 +525,8 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
   Widget build(BuildContext context) {
     return SizedBox(
       width: double.infinity,
+      // 48dp minimum touch target (WCAG 2.5.5 / Material Design).
+      height: 48,
       child: Material(
         color: Colors.transparent,
         child: InkWell(

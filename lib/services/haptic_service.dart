@@ -59,6 +59,16 @@ class HapticService {
     {'duration': 60, 'intensity': 0.4, 'sharpness': 0.2},  // soft fade
   ];
 
+  // Lighter than goalSuccess — a quick pop + crisp confirmation click.
+  // Distinct from medicineReminder (two sharp pulses) and lightTap (single).
+  static const _doseLoggedPattern = [
+    {'duration': 50, 'intensity': 0.55, 'sharpness': 0.4}, // soft pop
+    {'pause': 55},
+    {'duration': 85, 'intensity': 0.9, 'sharpness': 0.85}, // crisp success
+    {'pause': 35},
+    {'duration': 40, 'intensity': 0.35, 'sharpness': 0.2}, // gentle echo
+  ];
+
   // ── Public API ────────────────────────────────────────────────────────────
 
   /// Two short, sharp pulses — "Take your medicine."
@@ -92,6 +102,21 @@ class HapticService {
       HapticFeedback.mediumImpact();
       await Future.delayed(const Duration(milliseconds: 80));
       HapticFeedback.heavyImpact();
+    }
+  }
+
+  /// Short celebratory pop + crisp click — "Dose logged!"
+  /// Lighter than goalSuccess(), intentionally distinct from medicineReminder().
+  Future<void> doseLogged() async {
+    try {
+      await _channel.invokeMethod('playPattern', {
+        'pattern': _doseLoggedPattern,
+        'type': 'doseLogged',
+      });
+    } catch (_) {
+      HapticFeedback.mediumImpact();
+      await Future.delayed(const Duration(milliseconds: 90));
+      HapticFeedback.lightImpact();
     }
   }
 

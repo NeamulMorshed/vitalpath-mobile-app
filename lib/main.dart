@@ -214,7 +214,7 @@ class _ProfileTab extends StatelessWidget {
                     label: 'Prescription Vault',
                     subtitle: 'All prescriptions grouped by doctor',
                     onTap: () => Navigator.of(context).push(
-                      _fadeRoute(const PrescriptionVaultScreen()),
+                      _slideRoute(const PrescriptionVaultScreen()),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -224,7 +224,7 @@ class _ProfileTab extends StatelessWidget {
                     label: 'Notification & Haptics',
                     subtitle: 'Medicine reminders, goal alerts',
                     onTap: () => Navigator.of(context).push(
-                      _fadeRoute(const NotificationSettingsScreen()),
+                      _slideRoute(const NotificationSettingsScreen()),
                     ),
                   ),
                 ],
@@ -236,14 +236,30 @@ class _ProfileTab extends StatelessWidget {
     );
   }
 
-  PageRoute<void> _fadeRoute(Widget page) {
+  // Standard right-to-left slide for hierarchical drill-down screens.
+  // Reverse (pop) is right-to-left mirror, confirming the user is "going back."
+  PageRoute<void> _slideRoute(Widget page) {
     return PageRouteBuilder<void>(
       pageBuilder: (_, __, ___) => page,
-      transitionDuration: const Duration(milliseconds: 220),
-      transitionsBuilder: (_, anim, __, child) =>
-          FadeTransition(opacity: anim, child: child),
+      transitionDuration: const Duration(milliseconds: 280),
+      reverseTransitionDuration: const Duration(milliseconds: 240),
+      transitionsBuilder: (_, anim, __, child) {
+        final curved = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1.0, 0),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        );
+      },
     );
   }
+
 }
 
 class _SectionHeader extends StatelessWidget {

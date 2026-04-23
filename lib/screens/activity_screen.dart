@@ -863,7 +863,7 @@ class _PrescribedActivityCard extends StatelessWidget {
                   )
                 : SizedBox(
                     width: double.infinity,
-                    height: 40,
+                    height: 48, // 48dp minimum touch target
                     child: OutlinedButton.icon(
                       onPressed: () {
                         HapticFeedback.lightImpact();
@@ -977,7 +977,7 @@ class _StartWalkCard extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           SizedBox(
-            height: 42,
+            height: 48, // 48dp minimum touch target
             child: FilledButton(
               onPressed:
                   (isStarting || isActive) ? null : () => _start(context),
