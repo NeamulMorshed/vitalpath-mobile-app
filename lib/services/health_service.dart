@@ -172,6 +172,13 @@ class HealthService {
     }
   }
 
+  // ── One-shot public fetch ─────────────────────────────────────────────────
+  /// Triggers an immediate one-shot step count read from HealthKit / Health
+  /// Connect. Used by [ActivityProvider] for the 15-minute background
+  /// refresh tick so the displayed count stays current without waiting for the
+  /// next native observer event.
+  Future<int> fetchStepsNow() => _fetchStepsOnce();
+
   // ── Mock mode (dev / CI) ───────────────────────────────────────────────────
   /// Returns a simulated step count stream that increments by ~50 steps every
   /// 3 seconds.  Useful for UI development without a physical device.
