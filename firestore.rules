@@ -1,23 +1,42 @@
 // ═════════════════════════════════════════════════════════════════════════════
-// VitalPath — Cloud Firestore Security Rules
-// Branch: feature/medical-governance-v2
+// VitalPath — Cloud Firestore Security Rules  v2.1
 //
-// Architecture overview:
-//   • User roles are stored in /users/{userId}.role
-//     Valid values: "patient" | "doctor" | "caregiver" | "admin"
+// RBAC Architecture:
+//   Roles are carried as Firebase Auth CUSTOM CLAIMS (request.auth.token.role).
+//   Custom claims are set server-side by a Cloud Function on user creation:
+//     admin.auth().setCustomUserClaims(uid, { role: 'patient' | 'doctor' | ... })
 //
-//   • The Clinical Lock is the central security contract:
-//       Any document with is_verified == true is immutable to patients.
-//       Only authenticated doctors (or server-side Cloud Functions acting
-//       on a doctor's behalf) may write to locked documents.
+//   IMPORTANT: DO NOT use document-level role reads (get(...).data.role) for
+//   primary role enforcement — that adds one Firestore read per rule evaluation
+//   and will push latency above the 100ms SLA. Custom claims are embedded in
+//   the signed JWT, evaluated in-memory with zero additional I/O.
 //
-//   • The `is_verified` and `governance_level` fields are WRITE-PROTECTED
-//     from all clients. Only Cloud Functions (server SDK with admin privileges)
-//     may set these fields, preventing self-promotion attacks.
+//   Valid roles: "patient" | "doctor" | "caregiver" | "admin"
+//
+// Clinical Lock:
+//   Any document with is_verified == true is immutable to patients.
+//   Only Cloud Functions (Admin SDK) may set is_verified / governance_level.
+//   Doctors may amend their own verified records directly.
+//
+// Encryption metadata:
+//   All health documents may include an 'enc_version' field (integer) tracking
+//   the AES-256 encryption key version used for sensitive fields. This field is
+//   treated as non-clinical metadata and is always writable by the document owner.
+//
+// GDPR / Right to be Forgotten:
+//   Deletion is handled by the 'deleteAccount' Cloud Function (Admin SDK).
+//   Patients signal intent by writing to /data_deletion_requests/{userId}.
+//   The Cloud Function wipes all subcollections, the user document, and the
+//   Firebase Auth account. The client never deletes subcollections directly.
+//
+// Privacy Audit Log:
+//   /users/{userId}/privacy_audit_log/{entryId}
+//   Written EXCLUSIVELY by Cloud Functions when doctors read or write clinical data.
+//   Patients have read-only access to their own audit log.
 //
 // Testing:
-//   Run `firebase emulators:start` and validate with the Rules Playground
-//   or `@firebase/rules-unit-testing` before deploying.
+//   firebase emulators:start --only firestore
+//   firebase emulators:exec --only firestore "npm run test:rules"
 // ═════════════════════════════════════════════════════════════════════════════
 
 rules_version = '2';
@@ -26,23 +45,24 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ─────────────────────────────────────────────────────────────────────────
-    // HELPER FUNCTIONS
+    // HELPER FUNCTIONS — ZERO ADDITIONAL FIRESTORE READS
+    // All role checks use signed JWT custom claims (request.auth.token.*).
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Returns true when the caller is authenticated.
+    /// True when the request carries a valid Firebase Auth token.
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    /// Returns the caller's UID.
+    /// The caller's Firebase UID.
     function callerUid() {
       return request.auth.uid;
     }
 
-    /// Fetches the caller's role from their user profile document.
-    /// Roles: "patient" | "doctor" | "caregiver" | "admin"
+    /// Role from the signed JWT custom claim — zero Firestore I/O.
+    /// Set server-side: admin.auth().setCustomUserClaims(uid, { role: 'patient' })
     function callerRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      return request.auth.token.get('role', '');
     }
 
     /// True when the caller holds the 'doctor' role.
@@ -65,137 +85,151 @@ service cloud.firestore {
       return isAuthenticated() && callerRole() == 'caregiver';
     }
 
-    // ── Clinical Lock guards ─────────────────────────────────────────────────
+    // ── Ownership ─────────────────────────────────────────────────────────────
 
-    /// True when the existing document is locked (Clinical Lock active).
-    /// Used to block patient mutation on verified records.
-    function isVerifiedRecord() {
-      return resource.data.is_verified == true;
-    }
-
-    /// True when the incoming write attempts to promote is_verified to true.
-    /// Clients are NEVER allowed to self-promote a record to Verified status.
-    /// That transition must go through a Cloud Function (server SDK).
-    function isAttemptingVerificationPromotion() {
-      return request.resource.data.keys().hasAny(['is_verified', 'governance_level']);
-    }
-
-    /// True when the caller is the doctor named on the verified record.
-    /// Allows the authoring doctor to amend their own locked prescription.
-    function isAuthoringDoctor(patientId) {
-      return isDoctor() &&
-             callerUid() == get(/databases/$(database)/documents/users/$(patientId)/prescriptions/$(resource.id)).data.doctor_id;
-    }
-
-    // ── Ownership guards ──────────────────────────────────────────────────────
-
-    /// True when the caller owns the patient record being accessed.
+    /// True when the caller's UID matches the userId path segment.
     function isOwner(userId) {
       return isAuthenticated() && callerUid() == userId;
     }
 
-    /// True when the caller is a caregiver linked to this patient.
-    function isLinkedCaregiver(userId) {
-      return isCaregiver() &&
-             exists(/databases/$(database)/documents/users/$(userId)/caregivers/$(callerUid()));
-    }
+    // ── Relationship guards (one Firestore read each — used sparingly) ─────────
 
-    /// True when the caller is a doctor linked to this patient.
+    /// True when the calling doctor is linked to this patient.
+    /// This read is acceptable because it gates clinical write access, not reads.
     function isLinkedDoctor(userId) {
       return isDoctor() &&
              exists(/databases/$(database)/documents/users/$(userId)/linked_doctors/$(callerUid()));
     }
 
+    /// True when the calling caregiver is listed under this patient.
+    function isLinkedCaregiver(userId) {
+      return isCaregiver() &&
+             exists(/databases/$(database)/documents/users/$(userId)/caregivers/$(callerUid()));
+    }
+
+    // ── Clinical Lock helpers ──────────────────────────────────────────────────
+
+    /// True when the stored document carries the Clinical Lock (is_verified = true).
+    function isVerifiedRecord() {
+      return resource != null && resource.data.get('is_verified', false) == true;
+    }
+
+    /// Blocks any client attempt to self-promote governance fields.
+    /// ONLY Cloud Functions (Admin SDK) may write is_verified or governance_level.
+    function isAttemptingVerificationPromotion() {
+      return request.resource.data.keys().hasAny(['is_verified', 'governance_level']);
+    }
+
+    /// Encryption metadata field — always allowed alongside data fields.
+    /// enc_version tracks which AES-256 key version was used for sensitive fields.
+    function isEncryptionMetadataOnly(affectedKeys) {
+      return affectedKeys.hasOnly(['enc_version']);
+    }
+
+    // ── Field-level update guards ──────────────────────────────────────────────
+
+    /// Keys actually changed by this write (excludes unchanged fields).
+    function affectedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
 
     // ─────────────────────────────────────────────────────────────────────────
-    // USER PROFILE
-    // Path: /users/{userId}
+    // USER PROFILES
+    // /users/{userId}
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId} {
-      /// A user can read their own profile.
-      /// Doctors/admins can read any profile (for adherence reports).
+
+      /// Patients read their own; doctors/admins can read for clinical workflows.
       allow read: if isOwner(userId) || isDoctor() || isAdmin();
 
-      /// A user can create their own profile on signup.
-      allow create: if isOwner(userId) && isAuthenticated();
+      /// Self-creation on sign-up. Role is set by Cloud Function via custom claims
+      /// — the document role field is secondary, custom claim is authoritative.
+      allow create: if isOwner(userId) && isAuthenticated() &&
+                       // Prevent self-assigning privileged roles on account creation.
+                       request.resource.data.get('role', 'patient') == 'patient';
 
-      /// A user can update their own profile, but cannot change their own role.
-      /// Role changes are admin-only operations.
+      /// Owner may update their profile, but NOT their own 'role' field.
+      /// Role transitions (patient → caregiver) are admin-only Cloud Function ops.
       allow update: if isOwner(userId) &&
-                       !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']);
+                       !affectedKeys().hasAny(['role']) &&
+                       // GDPR deletion_requested flag is the ONLY way a patient can
+                       // mark their account for deletion — the Cloud Function handles the wipe.
+                       (affectedKeys().hasOnly(['deletion_requested', 'deletion_requested_at',
+                                                'display_name', 'avatar_url', 'timezone_preference',
+                                                'biometric_enabled', 'enc_version']) ||
+                        isAdmin());
 
-      /// Only admins can delete user profiles (GDPR "Right to be Forgotten"
-      /// is handled via a Cloud Function that performs a full data wipe).
+      /// Patients CANNOT delete their own document. The 'deleteAccount' Cloud
+      /// Function wipes everything after verifying the deletion_requested flag.
       allow delete: if isAdmin();
     }
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PRESCRIPTIONS  ← Clinical Lock enforced here
-    // Path: /users/{userId}/prescriptions/{prescriptionId}
+    // PRESCRIPTIONS  — Clinical Lock
+    // /users/{userId}/prescriptions/{prescriptionId}
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId}/prescriptions/{prescriptionId} {
 
-      /// READ:
-      ///   • The patient can read their own prescriptions.
-      ///   • Linked doctors can read (for clinical review).
-      ///   • Linked caregivers can read (for support monitoring).
       allow read: if isOwner(userId) ||
                      isLinkedDoctor(userId) ||
                      isLinkedCaregiver(userId) ||
                      isAdmin();
 
-      /// CREATE:
-      ///   • Patients can create their own (self-managed) prescriptions,
-      ///     but CANNOT set is_verified = true or governance_level = physician_verified.
-      ///     Those transitions belong exclusively to Cloud Functions.
-      ///   • Linked doctors can create verified prescriptions (pushed via sync).
-      ///     The is_verified and governance_level fields are still set server-side
-      ///     via Cloud Function — doctors write through the SDK, not directly.
+      /// Patients may create self-managed prescriptions.
+      /// Linked doctors may create verified prescriptions (via app SDK).
+      /// is_verified / governance_level must go through Cloud Function.
       allow create: if (isOwner(userId) && !isAttemptingVerificationPromotion()) ||
                        isLinkedDoctor(userId) ||
                        isAdmin();
 
-      /// UPDATE — THE CLINICAL LOCK:
-      ///   • If the document is already verified (is_verified == true):
-      ///       - Patients CANNOT update it. Full stop.
-      ///       - Caregivers CANNOT update it.
-      ///       - Only the linked doctor who authored it, or an admin, may update it.
-      ///   • If the document is NOT yet verified (patient-managed):
-      ///       - The owning patient may update it, but may NOT promote
-      ///         is_verified or governance_level (self-promotion attack prevention).
-      ///       - Linked doctors may update it.
+      /// THE CLINICAL LOCK UPDATE GATE:
+      ///   Unverified → patient can edit (but not promote governance fields).
+      ///   Verified → ONLY the linked doctor or admin may edit.
       allow update: if (
-                        // Case A: Record is NOT verified — patient can edit their own.
                         !isVerifiedRecord() &&
                         isOwner(userId) &&
                         !isAttemptingVerificationPromotion()
                        ) ||
                        (
-                        // Case B: Record is verified — only authoring doctor or admin.
                         isVerifiedRecord() &&
                         (isLinkedDoctor(userId) || isAdmin())
                        );
 
-      /// DELETE — THE CLINICAL LOCK:
-      ///   • Patients can delete ONLY their own NON-verified records.
-      ///   • Verified records can ONLY be deleted by a linked doctor or admin.
-      ///   • This ensures clinical adherence records are never wiped by the patient.
-      allow delete: if (
-                        // Patient deleting their own unverified record.
-                        !isVerifiedRecord() && isOwner(userId)
-                       ) ||
-                       (
-                        // Doctor or admin deleting a verified record.
-                        isVerifiedRecord() &&
-                        (isLinkedDoctor(userId) || isAdmin())
-                       );
+      /// Patients can delete ONLY their own unverified records.
+      /// Verified records require a linked doctor or admin.
+      allow delete: if (!isVerifiedRecord() && isOwner(userId)) ||
+                       (isVerifiedRecord() && (isLinkedDoctor(userId) || isAdmin()));
     }
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // NUTRITION LOGS  ← Same Clinical Lock pattern
-    // Path: /users/{userId}/nutrition_logs/{logId}
+    // MEDICINE LOGS  — Dose records (written by patient, audited)
+    // /users/{userId}/medicine_logs/{logId}
+    // ─────────────────────────────────────────────────────────────────────────
+    match /users/{userId}/medicine_logs/{logId} {
+
+      /// Patient reads their own. Linked doctor reads for adherence review.
+      allow read: if isOwner(userId) || isLinkedDoctor(userId) || isAdmin();
+
+      /// Patient creates dose logs (via MedicineLoggingService).
+      /// Logs are append-only — patients cannot retroactively alter their log.
+      allow create: if isOwner(userId) && isAuthenticated();
+
+      /// Medicine logs are immutable after creation.
+      /// Only admin may update (e.g., correcting a system error).
+      allow update: if isAdmin();
+
+      /// Patients cannot delete dose logs (audit trail integrity).
+      /// Admin can delete erroneous entries.
+      allow delete: if isAdmin();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // NUTRITION LOGS  — Clinical Lock
+    // /users/{userId}/nutrition_logs/{logId}
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId}/nutrition_logs/{logId} {
 
@@ -213,10 +247,7 @@ service cloud.firestore {
                         isOwner(userId) &&
                         !isAttemptingVerificationPromotion()
                        ) ||
-                       (
-                        isVerifiedRecord() &&
-                        (isLinkedDoctor(userId) || isAdmin())
-                       );
+                       (isVerifiedRecord() && (isLinkedDoctor(userId) || isAdmin()));
 
       allow delete: if (!isVerifiedRecord() && isOwner(userId)) ||
                        (isVerifiedRecord() && (isLinkedDoctor(userId) || isAdmin()));
@@ -224,8 +255,8 @@ service cloud.firestore {
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ACTIVITY LOGS  ← Modified Clinical Lock: patients CAN mark as completed
-    // Path: /users/{userId}/activity_logs/{logId}
+    // ACTIVITY LOGS  — Modified Clinical Lock: patients CAN toggle is_completed
+    // /users/{userId}/activity_logs/{logId}
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId}/activity_logs/{logId} {
 
@@ -238,21 +269,18 @@ service cloud.firestore {
                        isLinkedDoctor(userId) ||
                        isAdmin();
 
-      /// UPDATE — Activity special case:
-      ///   Patients CAN update is_completed on verified activity entries
-      ///   (this is adherence logging, not clinical data mutation).
-      ///   However, they CANNOT change any other field on a verified record.
       allow update: if (
-                        // Patient updating their own unverified activity.
+                        // Unverified — patient edits freely (cannot promote governance).
                         !isVerifiedRecord() &&
                         isOwner(userId) &&
                         !isAttemptingVerificationPromotion()
                        ) ||
                        (
-                        // Patient toggling is_completed ONLY on a verified activity.
+                        // Verified adherence toggle — patient marks prescribed activity done.
+                        // Only is_completed may change; all clinical fields stay locked.
                         isVerifiedRecord() &&
                         isOwner(userId) &&
-                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['is_completed'])
+                        affectedKeys().hasOnly(['is_completed', 'enc_version'])
                        ) ||
                        (
                         // Doctor or admin full update.
@@ -266,24 +294,47 @@ service cloud.firestore {
 
 
     // ─────────────────────────────────────────────────────────────────────────
+    // GPS WALK SESSIONS  — PHI: encrypted routePoints
+    // /users/{userId}/walk_sessions/{sessionId}
+    //
+    // routePoints contain lat/lng coordinates — health-sensitive spatial data.
+    // Client writes AES-256-encrypted routePoints before Firestore write.
+    // ─────────────────────────────────────────────────────────────────────────
+    match /users/{userId}/walk_sessions/{sessionId} {
+
+      allow read: if isOwner(userId) || isLinkedDoctor(userId) || isAdmin();
+
+      /// Patient creates walk sessions.
+      allow create: if isOwner(userId) && isAuthenticated();
+
+      /// Patient may update their own session (e.g., archiving GPS path to bounding box).
+      allow update: if isOwner(userId) ||
+                       (isLinkedDoctor(userId) && !affectedKeys().hasAny(['route_points'])) ||
+                       isAdmin();
+
+      /// Patients can delete their own walk sessions (no clinical lock on these).
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
     // APPOINTMENTS
-    // Path: /users/{userId}/appointments/{appointmentId}
+    // /users/{userId}/appointments/{appointmentId}
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId}/appointments/{appointmentId} {
 
       allow read: if isOwner(userId) || isLinkedDoctor(userId) || isAdmin();
 
-      /// Patient can create an appointment request.
       allow create: if isOwner(userId) && isAuthenticated();
 
-      /// Doctor can update appointment status (accept, reschedule, cancel).
-      /// Patient can cancel (update status to 'cancelled') only.
-      /// Server-Side Stamp wins on conflicts — handled by Cloud Function.
+      /// Doctor: full lifecycle management (confirm, reschedule, add notes).
+      /// Patient: can only set status → 'cancelled'. Cannot modify clinical fields.
+      /// Server-side timestamp wins on concurrent edits (handled by Cloud Function).
       allow update: if isLinkedDoctor(userId) ||
                        isAdmin() ||
                        (
                          isOwner(userId) &&
-                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+                         affectedKeys().hasOnly(['status']) &&
                          request.resource.data.status == 'cancelled'
                        );
 
@@ -292,53 +343,116 @@ service cloud.firestore {
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // LINKED DOCTORS (sub-collection for sync relationships)
-    // Path: /users/{userId}/linked_doctors/{doctorId}
+    // LINKED DOCTORS  — Sync relationship registry
+    // /users/{userId}/linked_doctors/{doctorId}
+    //
+    // Each document holds sync status, synced_at, and doctor metadata.
+    // The patient manages their own doctor list.
+    // Doctors can read their own link record (to verify patient consent).
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId}/linked_doctors/{doctorId} {
-      /// Only the patient or the doctor being linked can read/write this.
-      allow read: if isOwner(userId) || (isDoctor() && callerUid() == doctorId);
+
+      allow read: if isOwner(userId) ||
+                     (isDoctor() && callerUid() == doctorId) ||
+                     isAdmin();
+
+      /// Patient writes (add/remove doctor from their list).
       allow write: if isOwner(userId) || isAdmin();
     }
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // CAREGIVERS (sub-collection)
-    // Path: /users/{userId}/caregivers/{caregiverId}
+    // CAREGIVERS
+    // /users/{userId}/caregivers/{caregiverId}
     // ─────────────────────────────────────────────────────────────────────────
     match /users/{userId}/caregivers/{caregiverId} {
-      allow read: if isOwner(userId) || (isCaregiver() && callerUid() == caregiverId);
+
+      allow read: if isOwner(userId) ||
+                     (isCaregiver() && callerUid() == caregiverId) ||
+                     isAdmin();
+
       allow write: if isOwner(userId) || isAdmin();
     }
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // LINKED DOCTORS (sub-collection) — Blueprint §1.1 / §7
-    // Path: /users/{userId}/linked_doctors/{doctorId}
+    // PRIVACY AUDIT LOG  — Immutable, written by Cloud Functions only
+    // /users/{userId}/privacy_audit_log/{entryId}
     //
-    // Patients can read/write their own linked_doctors list.
-    // Doctors cannot modify a patient's linked list (write is patient-only).
-    // ─────────────────────────────────────────────────────────────────────────
-    match /users/{userId}/linked_doctors/{doctorId} {
-      allow read, write: if isOwner(userId);
-    }
-
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // DOCTORS DIRECTORY — Blueprint §1.1 / §7
-    // Path: /doctors/{doctorId}
+    // Schema per document:
+    //   event_type:          string  ("doctor_read" | "doctor_write" | "sync_connected" | ...)
+    //   actor_id:            string  (doctor UID who triggered the event)
+    //   actor_name:          string  (doctor display name)
+    //   actor_role:          string  ("doctor" | "caregiver" | "admin")
+    //   affected_collection: string  ("prescriptions" | "appointments" | ...)
+    //   affected_doc_id:     string? (document ID, if applicable)
+    //   timestamp:           timestamp (server-side only)
+    //   details:             string? (human-readable summary)
+    //   ip_address:          string? (captured server-side, never from client)
     //
-    // Any authenticated patient may read a doctor profile to validate a sync
-    // code. Writes are exclusively via Admin SDK (doctor onboarding flow).
+    // Patients can READ their own audit log (transparency).
+    // WRITES come exclusively from Cloud Functions (Admin SDK bypasses rules).
+    // No client (patient, doctor, or caregiver) may write entries.
     // ─────────────────────────────────────────────────────────────────────────
-    match /doctors/{doctorId} {
-      allow read: if request.auth != null;
+    match /users/{userId}/privacy_audit_log/{entryId} {
+
+      /// Patients view their own transparency log.
+      allow read: if isOwner(userId) || isAdmin();
+
+      /// No client writes — Cloud Functions use Admin SDK which bypasses rules.
       allow write: if false;
     }
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // DEFAULT: deny everything not explicitly matched above.
+    // GDPR DATA DELETION REQUESTS
+    // /data_deletion_requests/{userId}
+    //
+    // Patient writes a deletion request document. The 'deleteAccount' Cloud
+    // Function watches this collection and executes the full wipe asynchronously:
+    //   1. Deletes all patient subcollections (prescriptions, logs, sessions, etc.)
+    //   2. Deletes the /users/{userId} document
+    //   3. Deletes the Firebase Auth account
+    //   4. Writes a tombstone to /deletion_audit/{userId} (GDPR compliance record)
+    //
+    // This design is necessary because clients cannot delete Firestore subcollections
+    // directly — only the Admin SDK can enumerate and delete subcollections atomically.
+    // ─────────────────────────────────────────────────────────────────────────
+    match /data_deletion_requests/{userId} {
+
+      /// Patient reads their own pending request (to check status).
+      allow read: if isOwner(userId) || isAdmin();
+
+      /// Patient creates their own deletion request.
+      /// Required fields: requested_at (timestamp), reason (string), confirmed (bool).
+      allow create: if isOwner(userId) &&
+                       request.resource.data.keys().hasAll(['requested_at', 'confirmed']) &&
+                       request.resource.data.confirmed == true;
+
+      /// Deletion requests are immutable after creation.
+      /// Only admin (or Cloud Function) may update status fields.
+      allow update: if isAdmin();
+
+      /// Requests are deleted by the Cloud Function once processed.
+      allow delete: if isAdmin();
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DOCTORS DIRECTORY
+    // /doctors/{doctorId}
+    //
+    // Public-read (authenticated only) for sync code validation.
+    // All writes via Admin SDK on doctor onboarding.
+    // ─────────────────────────────────────────────────────────────────────────
+    match /doctors/{doctorId} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DEFAULT DENY — everything not explicitly matched above is blocked.
     // ─────────────────────────────────────────────────────────────────────────
     match /{document=**} {
       allow read, write: if false;

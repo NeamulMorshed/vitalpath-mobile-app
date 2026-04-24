@@ -179,8 +179,17 @@ class DashboardProvider extends ChangeNotifier {
   List<TimelineEntry> _buildEntries(DateTime now) {
     final entries = <TimelineEntry>[];
 
+    // Today's date at midnight — used for prescription date range check.
+    final todayDate = DateTime(now.year, now.month, now.day);
+
     // ── 1. Medicine entries ───────────────────────────────────────────────
     for (final rx in _prescriptions.allPrescriptions) {
+      // Skip prescriptions whose course has not yet started or has ended.
+      // startDate / endDate are date-only; compare at midnight precision.
+      final rxStart = DateTime(rx.startDate.year, rx.startDate.month, rx.startDate.day);
+      final rxEnd   = DateTime(rx.endDate.year,   rx.endDate.month,   rx.endDate.day);
+      if (todayDate.isBefore(rxStart) || todayDate.isAfter(rxEnd)) continue;
+
       final slots = _doseTimesFor(rx);
       for (final slot in slots) {
         final scheduledAt = DateTime(

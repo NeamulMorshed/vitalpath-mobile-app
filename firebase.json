@@ -1,0 +1,34 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "omra-mobile-app",
+          "appId": "1:14070732014:android:9bd5a0351734bc17758fff",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "omra-mobile-app",
+          "appId": "1:14070732014:ios:6e27669d5a728129758fff",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "omra-mobile-app",
+          "configurations": {
+            "android": "1:14070732014:android:9bd5a0351734bc17758fff",
+            "ios": "1:14070732014:ios:6e27669d5a728129758fff"
+          }
+        }
+      }
+    }
+  }
+}

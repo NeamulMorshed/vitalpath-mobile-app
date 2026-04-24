@@ -1,8 +1,10 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
+import 'package:vitalpath/firebase_options.dart';
 import 'package:vitalpath/providers/activity_provider.dart';
 import 'package:vitalpath/providers/appointment_provider.dart';
 import 'package:vitalpath/providers/dashboard_provider.dart';
@@ -13,15 +15,22 @@ import 'package:vitalpath/screens/home_screen.dart';
 import 'package:vitalpath/screens/my_doctors_screen.dart';
 import 'package:vitalpath/screens/notification_settings_screen.dart';
 import 'package:vitalpath/screens/prescription_vault_screen.dart';
+import 'package:vitalpath/screens/privacy_settings_screen.dart';
+import 'package:vitalpath/services/auth_gate_service.dart';
+import 'package:vitalpath/services/sync_queue_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Firebase — uncomment after `flutterfire configure`:
-  // await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
   await Hive.initFlutter();
   await Hive.openBox('sync_queue');
+
+  // Wire the offline sync queue to connectivity events.
+  // ConnectivityService will call flushQueue() automatically when the device
+  // comes back online after a Firebase outage or network loss.
+  await ConnectivityService().initialise(SyncQueueService());
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -56,7 +65,7 @@ class VitalpathApp extends StatelessWidget {
         title: 'VitalPath',
         debugShowCheckedModeBanner: false,
         theme: _buildTheme(),
-        home: const _AppShell(),
+        home: const _AuthGateWrapper(),
       ),
     );
   }
@@ -80,6 +89,129 @@ class VitalpathApp extends StatelessWidget {
           color: Color(0xFF1A1A2E),
           fontSize: 18,
           fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+// ── Auth gate wrapper ─────────────────────────────────────────────────────────
+// Sits above _AppShell. Checks the biometric session on cold start and every
+// time the app returns from background. Shows _LockScreen when session is
+// expired and prompts for biometric / device credential.
+class _AuthGateWrapper extends StatefulWidget {
+  const _AuthGateWrapper();
+
+  @override
+  State<_AuthGateWrapper> createState() => _AuthGateWrapperState();
+}
+
+class _AuthGateWrapperState extends State<_AuthGateWrapper>
+    with WidgetsBindingObserver {
+  bool _isLocked = false;
+  bool _isPrompting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkSession();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkSession();
+  }
+
+  Future<void> _checkSession() async {
+    final valid = await AuthGateService().hasValidSession();
+    if (!valid && mounted) {
+      setState(() => _isLocked = true);
+      _promptAuth();
+    }
+  }
+
+  Future<void> _promptAuth() async {
+    if (_isPrompting) return;
+    _isPrompting = true;
+    final success = await AuthGateService().authenticate();
+    _isPrompting = false;
+    if (success && mounted) setState(() => _isLocked = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        const _AppShell(),
+        if (_isLocked) _LockScreen(onUnlock: _promptAuth),
+      ],
+    );
+  }
+}
+
+class _LockScreen extends StatelessWidget {
+  final VoidCallback onUnlock;
+  const _LockScreen({required this.onUnlock});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xFF1A1A2E),
+      child: SafeArea(
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00897B),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: const Icon(
+                  Icons.favorite_rounded,
+                  color: Colors.white,
+                  size: 40,
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'VitalPath',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Confirm your identity to continue',
+                style: TextStyle(
+                  color: Color(0xFF9E9E9E),
+                  fontSize: 14,
+                ),
+              ),
+              const SizedBox(height: 48),
+              FilledButton.icon(
+                onPressed: onUnlock,
+                icon: const Icon(Icons.fingerprint_rounded),
+                label: const Text('Unlock'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF00897B),
+                  minimumSize: const Size(160, 48),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -225,6 +357,14 @@ class _ProfileTab extends StatelessWidget {
                     subtitle: 'Medicine reminders, goal alerts',
                     onTap: () => Navigator.of(context).push(
                       _slideRoute(const NotificationSettingsScreen()),
+                    ),
+                  ),
+                  _ProfileTile(
+                    icon: Icons.security_rounded,
+                    label: 'Privacy & Security',
+                    subtitle: 'Biometric lock, encryption, data access',
+                    onTap: () => Navigator.of(context).push(
+                      PrivacySettingsScreen.route(patientId),
                     ),
                   ),
                 ],

@@ -1,6 +1,6 @@
 name: vitalpath
 description: VitalPath — Patient health companion mobile app.
-version: 1.4.0+2
+version: 1.5.0+3
 
 publish_to: none
 
@@ -28,14 +28,19 @@ dependencies:
   # ── Media ─────────────────────────────────────────────────────────────────────
   image_picker: ^1.1.2
 
+  # ── Security ───────────────────────────────────────────────────────────────────
+  local_auth: ^2.3.0              # Biometric / device-credential auth gate
+  flutter_secure_storage: ^9.2.2  # Hardware-backed Keychain/Keystore for AES key
+  encrypt: ^5.0.3                 # AES-256-CBC field-level encryption
+
   # ── Native integrations ───────────────────────────────────────────────────────
   # These require platform-side configuration before enabling.
   # See the integration guide in CLAUDE.md for setup steps.
   #
   # Firebase — run `flutterfire configure` first:
-  #   firebase_core: ^3.8.0
-  #   cloud_firestore: ^5.5.4
-  #   firebase_auth: ^5.4.0
+  firebase_core: ^3.8.0
+  cloud_firestore: ^5.5.4
+  firebase_auth: ^5.4.0
   #
   # GPS / Maps — add API keys to AndroidManifest.xml and AppDelegate.swift:
   #   geolocator: ^12.0.0

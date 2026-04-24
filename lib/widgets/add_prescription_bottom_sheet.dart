@@ -376,6 +376,54 @@ class _AddPrescriptionBottomSheetState
     return null;
   }
 
+  // ── Soft-validation plausibility thresholds ───────────────────────────────
+  // These are supportive warnings, not hard blocks. The patient can confirm
+  // and proceed — the guard exists to catch accidental data-entry errors
+  // (e.g., typing "500" for a 5mg pill, or misreading a decimal).
+  static const _softWarnThresholds = {
+    DosageUnit.mg: 1000.0,   // unusual above 1000 mg per dose
+    DosageUnit.ml: 100.0,    // unusual above 100 ml per dose
+    DosageUnit.pills: 10.0,  // unusual above 10 pills per dose
+  };
+
+  Future<bool> _softValidateDosage(double dosage) async {
+    final threshold = _softWarnThresholds[_selectedUnit];
+    if (threshold == null || dosage <= threshold) return true;
+
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text(
+              'Unusually High Dose',
+              style: TextStyle(
+                  fontSize: 17, fontWeight: FontWeight.w700,
+                  color: Color(0xFF1A1A2E)),
+            ),
+            content: Text(
+              'A dose of ${dosage.toStringAsFixed(dosage.truncateToDouble() == dosage ? 0 : 2)} '
+              '${_selectedUnit.label} is higher than what\'s typically seen for a '
+              'single dose. Please double-check the amount with your prescription label '
+              'or your doctor before saving.',
+              style: const TextStyle(
+                  fontSize: 14, color: Color(0xFF555566), height: 1.45),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Go Back & Check'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF00897B)),
+                child: const Text('Yes, That\'s Correct'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
   Future<void> _onSave() async {
     // Trigger all field validators.
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -390,6 +438,11 @@ class _AddPrescriptionBottomSheetState
       );
       return;
     }
+
+    // Soft-validation: warn on statistically improbable dosage.
+    final parsedDosage = double.tryParse(_dosageCtrl.text.trim()) ?? 0;
+    final confirmed = await _softValidateDosage(parsedDosage);
+    if (!confirmed) return;
 
     HapticFeedback.lightImpact();
     setState(() => _isSaving = true);

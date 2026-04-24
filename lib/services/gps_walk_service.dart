@@ -69,6 +69,10 @@ import 'package:vitalpath/services/haptic_service.dart';
 const _distanceFilterM = 5.0;       // GPS noise gate (metres)
 const _storageLowThresholdMb = 500; // archive trigger (megabytes)
 const _caloriesPerKm = 60.0;        // MET-based estimate for brisk walking
+// Maximum plausible human movement speed (15 m/s ≈ 54 km/h, well above sprint).
+// Points that imply a higher speed are discarded as GPS multipath glitches.
+// This prevents a 100km/10min impossible-walk from accumulating in distance.
+const _maxPlausibleSpeedMs = 15.0;
 
 // ── GPS permission contract ───────────────────────────────────────────────────
 // geolocator usage shown in comments; avoids hard import for testability.
@@ -246,8 +250,22 @@ class GpsWalkService {
       final last = _points.last;
       final delta = _haversineKm(
         last.latitude, last.longitude, lat, lng);
-      // Ignore GPS jitter — only accept if > noise gate equivalent in km
+      // Ignore GPS jitter — only accept if > noise gate equivalent in km.
       if (delta < _distanceFilterM / 1000) return;
+
+      // Impossible-speed guard: discard GPS multipath glitches that imply
+      // movement faster than _maxPlausibleSpeedMs (15 m/s ≈ 54 km/h).
+      // This prevents a 100km/10min phantom walk from accumulating.
+      final elapsedSec = now.difference(last.timestamp).inMilliseconds / 1000.0;
+      if (elapsedSec > 0) {
+        final impliedSpeedMs = (delta * 1000) / elapsedSec;
+        if (impliedSpeedMs > _maxPlausibleSpeedMs) {
+          debugPrint('[GpsWalkService] Discarded GPS glitch: '
+              '${impliedSpeedMs.toStringAsFixed(1)} m/s > '
+              '${_maxPlausibleSpeedMs} m/s threshold.');
+          return;
+        }
+      }
 
       _distanceKm += delta;
       _checkKmMilestone();

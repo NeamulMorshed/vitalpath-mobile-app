@@ -29,6 +29,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -269,20 +270,19 @@ class ConnectivityService {
 
   // ── Initialisation ─────────────────────────────────────────────────────────
   Future<void> initialise(SyncQueueService syncQueue) async {
-    // Real implementation uses connectivity_plus:
-    //
-    // import 'package:connectivity_plus/connectivity_plus.dart';
-    // final connectivity = Connectivity();
-    // _subscription = connectivity.onConnectivityChanged.listen((result) {
-    //   final nowOnline = result != ConnectivityResult.none;
-    //   _handleTransition(nowOnline, syncQueue);
-    // });
-    //
-    // // Check initial state.
-    // final initial = await connectivity.checkConnectivity();
-    // _isOnline = initial != ConnectivityResult.none;
-    //
-    // Stub implementation for testability without plugin:
+    final connectivity = Connectivity();
+
+    // Check initial connectivity state.
+    // connectivity_plus v6 returns List<ConnectivityResult>.
+    final initial = await connectivity.checkConnectivity();
+    _isOnline = initial.any((r) => r != ConnectivityResult.none);
+
+    // Subscribe to network changes — flushQueue() fires on offline→online.
+    _subscription = connectivity.onConnectivityChanged.listen((results) {
+      final nowOnline = results.any((r) => r != ConnectivityResult.none);
+      _handleTransition(nowOnline, syncQueue);
+    });
+
     debugPrint('[Connectivity] Service initialised. Online: $_isOnline');
   }
 
