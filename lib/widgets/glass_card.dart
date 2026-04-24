@@ -44,12 +44,13 @@ class GlassCard extends StatelessWidget {
     super.key,
     required this.child,
     this.blurSigma = 20.0,
+    Color? borderColor,
     BorderRadius? borderRadius,
     this.padding,
     this.boxShadow,
     this.borderWidth = 1.0,
   })  : surfaceColor = const Color(0x12FFFFFF),
-        borderColor = const Color(0x21FFFFFF),
+        borderColor = borderColor ?? const Color(0x21FFFFFF),
         borderRadius =
             borderRadius ?? const BorderRadius.all(Radius.circular(20));
 
@@ -58,12 +59,13 @@ class GlassCard extends StatelessWidget {
     super.key,
     required this.child,
     this.blurSigma = 16.0,
+    Color? borderColor,
     BorderRadius? borderRadius,
     this.padding,
     this.boxShadow,
     this.borderWidth = 1.0,
   })  : surfaceColor = const Color(0xB3FFFFFF), // 70% white
-        borderColor = const Color(0x8CFFFFFF),  // 55% white
+        borderColor = borderColor ?? const Color(0x8CFFFFFF),
         borderRadius =
             borderRadius ?? const BorderRadius.all(Radius.circular(20));
 
@@ -72,12 +74,13 @@ class GlassCard extends StatelessWidget {
     super.key,
     required this.child,
     this.blurSigma = 20.0,
+    Color? borderColor,
     BorderRadius? borderRadius,
     this.padding,
     this.boxShadow,
     this.borderWidth = 1.0,
   })  : surfaceColor = const Color(0x2E00897B), // ~18% teal
-        borderColor = const Color(0x5900897B),  // ~35% teal
+        borderColor = borderColor ?? const Color(0x5900897B),
         borderRadius =
             borderRadius ?? const BorderRadius.all(Radius.circular(20));
 

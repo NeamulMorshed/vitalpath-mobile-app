@@ -1,31 +1,3 @@
-/// smart_timeline_widget.dart
-/// ─────────────────────────────────────────────────────────────────────────────
-/// The Smart Timeline — a lazy SliverList of today's health events.
-///
-/// Blueprint §3.1 — "Upcoming tasks must be Elevated (bold UI, high contrast).
-///   Completed tasks must move to a Faded state (reduced opacity, checkmark).
-///   Add a 'Log' button onto Medicine cards so users can log a dose in one tap
-///   without leaving the Home screen."
-///
-/// Visual states:
-///   dueNow    → pulsing teal border + "Due Now" chip                  (100% opacity)
-///   upcoming  → solid left border, bold title, high-contrast           (100% opacity)
-///   locked    → teal left border + lock badge, read-only               (100% opacity)
-///   missed    → amber/red muted, 'Missed' chip                         (72% opacity)
-///   completed → grey ticked-off, strikethrough time, checkmark icon    (45% opacity)
-///
-/// Quick-Log:
-///   Medicine cards in upcoming/dueNow state show a "Log Dose" chip.
-///   Tap → [DashboardProvider.quickLog()] → success (optimistic) or
-///   [DuplicateLogException] → [DuplicateLogModal].
-///
-/// Performance (120fps):
-///   • [RepaintBoundary] per card.
-///   • [SliverList] + [SliverChildBuilderDelegate] → lazy build (O(visible)).
-///   • [AnimatedContainer] pulse width on dueNow state — no layout jank.
-///   • [const] constructors throughout; no lambda closures in build().
-/// ─────────────────────────────────────────────────────────────────────────────
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -35,11 +7,27 @@ import 'package:vitalpath/models/timeline_entry.dart';
 import 'package:vitalpath/providers/dashboard_provider.dart';
 import 'package:vitalpath/services/haptic_service.dart';
 import 'package:vitalpath/services/medicine_logging_service.dart';
+import 'package:vitalpath/theme/vitalpath_theme.dart';
 import 'package:vitalpath/widgets/duplicate_log_modal.dart';
+import 'package:vitalpath/widgets/glass_card.dart';
 import 'package:vitalpath/widgets/success_toast.dart';
 
-// ── Public SliverList widget ──────────────────────────────────────────────────
-/// Returns a [SliverList] ready to drop into a [CustomScrollView].
+// ─────────────────────────────────────────────────────────────────────────────
+// Smart Timeline — 2026 Glass Card Edition
+// ─────────────────────────────────────────────────────────────────────────────
+// Visual states (Elevated vs. Faded logic):
+//   dueNow    → GlassCard.dark + Electric Teal border glow  (100% opacity)
+//   upcoming  → GlassCard.dark + subtle border              (100% opacity)
+//   locked    → GlassCard.accent (teal-tinted)              (100% opacity)
+//   missed    → dark card + amber border                    (72% opacity)
+//   completed → plain dark card, no border, 40% opacity + checkmark
+//
+// Performance:
+//   • RepaintBoundary per card (SliverList is lazy).
+//   • _PulsingCard: pulsing border AnimationController, isolated repaint.
+//   • const constructors throughout.
+// ─────────────────────────────────────────────────────────────────────────────
+
 class SmartTimelineSliverList extends StatelessWidget {
   const SmartTimelineSliverList({super.key});
 
@@ -59,7 +47,7 @@ class SmartTimelineSliverList extends StatelessWidget {
               final entry = entries[index];
               return RepaintBoundary(
                 key: ValueKey(entry.id),
-                child: _TimelineEntryCard(entry: entry),
+                child: _TimelineCard(entry: entry),
               );
             },
             childCount: entries.length,
@@ -70,103 +58,68 @@ class SmartTimelineSliverList extends StatelessWidget {
   }
 }
 
-// ── Individual timeline card ──────────────────────────────────────────────────
-class _TimelineEntryCard extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// Timeline Card — routes to pulsing or static variant
+// ─────────────────────────────────────────────────────────────────────────────
+class _TimelineCard extends StatelessWidget {
   final TimelineEntry entry;
-
-  const _TimelineEntryCard({required this.entry});
-
-  // ── Colour scheme by state ─────────────────────────────────────────────────
-  Color get _accentColor {
-    switch (entry.state) {
-      case TimelineEntryState.dueNow:
-        return const Color(0xFF00897B);
-      case TimelineEntryState.upcoming:
-        return const Color(0xFF1565C0);
-      case TimelineEntryState.locked:
-        return const Color(0xFF00897B);
-      case TimelineEntryState.missed:
-        return const Color(0xFFF57C00);
-      case TimelineEntryState.completed:
-        return Colors.grey;
-    }
-  }
-
-  Color get _bgColor {
-    switch (entry.state) {
-      case TimelineEntryState.dueNow:
-        return const Color(0xFFE6F7F4);
-      case TimelineEntryState.upcoming:
-        return Colors.white;
-      case TimelineEntryState.locked:
-        return const Color(0xFFE6F7F4);
-      case TimelineEntryState.missed:
-        return const Color(0xFFFFF3E0);
-      case TimelineEntryState.completed:
-        return const Color(0xFFF8F9FA);
-    }
-  }
-
-  double get _opacity {
-    switch (entry.state) {
-      case TimelineEntryState.completed:
-        // 0.65 keeps completed items readable (WCAG contrast) while still
-        // visually distinct from active elevated tasks.
-        return 0.65;
-      case TimelineEntryState.missed:
-        return 0.72;
-      default:
-        return 1.0;
-    }
-  }
+  const _TimelineCard({required this.entry});
 
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: _opacity,
-      child: entry.state == TimelineEntryState.dueNow
-          ? _PulsingCard(entry: entry, accentColor: _accentColor, bgColor: _bgColor)
-          : _StaticCard(entry: entry, accentColor: _accentColor, bgColor: _bgColor),
-    );
+    // Completed entries: 40% opacity, faded appearance
+    if (entry.isCompleted) {
+      return Opacity(
+        opacity: 0.40,
+        child: _StaticGlassCard(entry: entry),
+      );
+    }
+    // Missed: 72% opacity, amber tint
+    if (entry.isMissed) {
+      return Opacity(
+        opacity: 0.72,
+        child: _StaticGlassCard(entry: entry),
+      );
+    }
+    // Due Now: pulsing electric teal border
+    if (entry.isDueNow) {
+      return _PulsingGlassCard(entry: entry);
+    }
+    // Upcoming / Locked: static glass card, full opacity
+    return _StaticGlassCard(entry: entry);
   }
 }
 
-// ── Pulsing card for "Due Now" state ─────────────────────────────────────────
-class _PulsingCard extends StatefulWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// Pulsing glass card — electric teal border for "Due Now"
+// ─────────────────────────────────────────────────────────────────────────────
+class _PulsingGlassCard extends StatefulWidget {
   final TimelineEntry entry;
-  final Color accentColor;
-  final Color bgColor;
-
-  const _PulsingCard({
-    required this.entry,
-    required this.accentColor,
-    required this.bgColor,
-  });
+  const _PulsingGlassCard({required this.entry});
 
   @override
-  State<_PulsingCard> createState() => _PulsingCardState();
+  State<_PulsingGlassCard> createState() => _PulsingGlassCardState();
 }
 
-class _PulsingCardState extends State<_PulsingCard>
+class _PulsingGlassCardState extends State<_PulsingGlassCard>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse;
+  late final AnimationController _ctrl;
   late final Animation<double> _glow;
 
   @override
   void initState() {
     super.initState();
-    _pulse = AnimationController(
+    _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1100),
+      duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
-    _glow = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-    );
+    _glow = Tween<double>(begin: 0.3, end: 1.0)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
   }
 
   @override
   void dispose() {
-    _pulse.dispose();
+    _ctrl.dispose();
     super.dispose();
   }
 
@@ -174,151 +127,186 @@ class _PulsingCardState extends State<_PulsingCard>
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _glow,
-      builder: (_, child) => _CardShell(
+      builder: (_, child) => _CardWrapper(
         entry: widget.entry,
-        accentColor: widget.accentColor,
-        bgColor: widget.bgColor,
-        extraShadowOpacity: _glow.value * 0.18,
+        borderColor: VitalPathTheme.electricTeal.withValues(alpha: _glow.value * 0.7),
+        glowShadow: [
+          BoxShadow(
+            color: VitalPathTheme.electricTeal
+                .withValues(alpha: 0.15 * _glow.value),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
         child: child!,
       ),
-      child: _CardBody(entry: widget.entry, accentColor: widget.accentColor),
+      child: _CardBody(entry: widget.entry),
     );
   }
 }
 
-// ── Static card for all other states ─────────────────────────────────────────
-class _StaticCard extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// Static glass card — upcoming / locked / missed / completed
+// ─────────────────────────────────────────────────────────────────────────────
+class _StaticGlassCard extends StatelessWidget {
   final TimelineEntry entry;
-  final Color accentColor;
-  final Color bgColor;
-
-  const _StaticCard({
-    required this.entry,
-    required this.accentColor,
-    required this.bgColor,
-  });
+  const _StaticGlassCard({required this.entry});
 
   @override
   Widget build(BuildContext context) {
-    return _CardShell(
+    Color borderColor;
+    switch (entry.state) {
+      case TimelineEntryState.upcoming:
+        borderColor = Colors.white.withValues(alpha: 0.12);
+        break;
+      case TimelineEntryState.locked:
+        borderColor = VitalPathTheme.clinicalTeal.withValues(alpha: 0.4);
+        break;
+      case TimelineEntryState.missed:
+        borderColor = VitalPathTheme.alertAmber.withValues(alpha: 0.35);
+        break;
+      default:
+        borderColor = Colors.white.withValues(alpha: 0.06);
+    }
+
+    return _CardWrapper(
       entry: entry,
-      accentColor: accentColor,
-      bgColor: bgColor,
-      extraShadowOpacity: 0,
-      child: _CardBody(entry: entry, accentColor: accentColor),
+      borderColor: borderColor,
+      glowShadow: null,
+      child: _CardBody(entry: entry),
     );
   }
 }
 
-// ── Card shell (border, shadow, left accent stripe) ──────────────────────────
-class _CardShell extends StatelessWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// Card wrapper — glass container + left-accent stripe
+// ─────────────────────────────────────────────────────────────────────────────
+class _CardWrapper extends StatelessWidget {
   final TimelineEntry entry;
-  final Color accentColor;
-  final Color bgColor;
-  final double extraShadowOpacity;
+  final Color borderColor;
+  final List<BoxShadow>? glowShadow;
   final Widget child;
 
-  const _CardShell({
+  const _CardWrapper({
     required this.entry,
-    required this.accentColor,
-    required this.bgColor,
-    required this.extraShadowOpacity,
+    required this.borderColor,
+    required this.glowShadow,
     required this.child,
   });
 
+  Color get _stripeColor {
+    switch (entry.state) {
+      case TimelineEntryState.dueNow:
+        return VitalPathTheme.electricTeal;
+      case TimelineEntryState.upcoming:
+        return VitalPathTheme.clinicalTeal;
+      case TimelineEntryState.locked:
+        return VitalPathTheme.clinicalTeal;
+      case TimelineEntryState.missed:
+        return VitalPathTheme.alertAmber;
+      case TimelineEntryState.completed:
+        return Colors.white.withValues(alpha: 0.2);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-      decoration: BoxDecoration(
-        color: bgColor,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: GlassCard.dark(
         borderRadius: BorderRadius.circular(16),
-        border: Border(
-          left: BorderSide(color: accentColor, width: 4),
-          top: BorderSide(color: Colors.grey.shade200, width: 1),
-          right: BorderSide(color: Colors.grey.shade200, width: 1),
-          bottom: BorderSide(color: Colors.grey.shade200, width: 1),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0x0A000000),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-          if (extraShadowOpacity > 0)
-            BoxShadow(
-              color: accentColor.withOpacity(extraShadowOpacity),
-              blurRadius: 14,
-              offset: const Offset(0, 4),
+        borderColor: borderColor,
+        borderWidth: entry.isDueNow ? 1.5 : 1.0,
+        boxShadow: glowShadow ?? VitalPathTheme.cardShadow,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(15),
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Left accent stripe
+                Container(
+                  width: 3,
+                  color: _stripeColor,
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: child,
+                  ),
+                ),
+              ],
             ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: child,
+          ),
+        ),
       ),
     );
   }
 }
 
-// ── Card body (content, quick-log) ───────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Card body — content, quick-log, variable typography
+// ─────────────────────────────────────────────────────────────────────────────
 class _CardBody extends StatelessWidget {
   final TimelineEntry entry;
-  final Color accentColor;
-
   static final _timeFmt = DateFormat('h:mm a');
 
-  const _CardBody({required this.entry, required this.accentColor});
+  const _CardBody({required this.entry});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // ── Header row ─────────────────────────────────────────────────────
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Type icon badge
+            // Icon badge
             Container(
-              width: 36,
-              height: 36,
+              width: 38,
+              height: 38,
               decoration: BoxDecoration(
-                color: accentColor.withOpacity(0.12),
+                color: _iconBgColor,
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(entry.type.icon, size: 18, color: accentColor),
+              child: Icon(entry.type.icon, size: 18, color: _accentColor),
             ),
             const SizedBox(width: 12),
 
-            // Title + subtitle
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Medicine name — light (w400) per variable-typography spec
                   Text(
                     entry.title,
                     style: TextStyle(
                       fontSize: 15,
+                      // Upcoming/dueNow: bold for scannability; completed: light
                       fontWeight: entry.isUpcoming || entry.isDueNow
                           ? FontWeight.w700
-                          : FontWeight.w600,
+                          : FontWeight.w400,
                       color: entry.isCompleted
-                          ? Colors.grey[500]
-                          : const Color(0xFF1A1A2E),
+                          ? Colors.white.withValues(alpha: 0.5)
+                          : Colors.white,
                       decoration: entry.isCompleted
                           ? TextDecoration.lineThrough
                           : null,
+                      decorationColor: Colors.white.withValues(alpha: 0.4),
                     ),
                   ),
                   const SizedBox(height: 2),
+                  // Dosage — heavy (w700) per variable-typography spec
                   Text(
                     entry.subtitle,
                     style: TextStyle(
                       fontSize: 12.5,
+                      fontWeight: entry.isDueNow || entry.isUpcoming
+                          ? FontWeight.w700  // heavy = clinical data
+                          : FontWeight.w400, // light = faded label
                       color: entry.isCompleted
-                          ? Colors.grey[400]
-                          : const Color(0xFF888899),
+                          ? Colors.white.withValues(alpha: 0.3)
+                          : _accentColor.withValues(alpha: 0.85),
                     ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -326,26 +314,25 @@ class _CardBody extends StatelessWidget {
                 ],
               ),
             ),
-
             const SizedBox(width: 8),
 
-            // State badge + time
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                _StateBadge(state: entry.state, accentColor: accentColor),
+                _StateBadge(state: entry.state),
                 const SizedBox(height: 4),
                 Text(
                   _timeFmt.format(entry.scheduledAt),
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 11,
                     fontWeight: FontWeight.w600,
                     color: entry.isCompleted
-                        ? Colors.grey[400]
-                        : const Color(0xFF888899),
+                        ? Colors.white.withValues(alpha: 0.25)
+                        : Colors.white.withValues(alpha: 0.5),
                     decoration: entry.isCompleted
                         ? TextDecoration.lineThrough
                         : null,
+                    decorationColor: Colors.white.withValues(alpha: 0.25),
                   ),
                 ),
               ],
@@ -353,57 +340,62 @@ class _CardBody extends StatelessWidget {
           ],
         ),
 
-        // ── Doctor name ────────────────────────────────────────────────────
+        // Doctor name
         if (entry.doctorName != null) ...[
           const SizedBox(height: 8),
           Row(
             children: [
-              const Icon(Icons.person_rounded, size: 13, color: Color(0xFFBBBBCC)),
-              const SizedBox(width: 4),
+              Icon(Icons.verified_rounded,
+                  size: 12, color: VitalPathTheme.verifiedGold),
+              const SizedBox(width: 5),
               Text(
                 'Dr. ${entry.doctorName}',
-                style: const TextStyle(fontSize: 12, color: Color(0xFFBBBBCC)),
+                style: VitalPathTheme.verifiedData.copyWith(fontSize: 11),
               ),
             ],
           ),
         ],
 
-        // ── Quick-Log button (medicine only, active state) ─────────────────
+        // Quick-Log (medicine, active state)
         if (entry.canQuickLog) ...[
           const SizedBox(height: 10),
-          _QuickLogButton(entry: entry, accentColor: accentColor),
+          _QuickLogChip(entry: entry),
         ],
 
-        // ── Completed checkmark row ────────────────────────────────────────
+        // Completed row
         if (entry.isCompleted) ...[
           const SizedBox(height: 8),
           Row(
-            children: const [
-              Icon(Icons.check_circle_rounded,
+            children: [
+              const Icon(Icons.check_circle_rounded,
                   size: 14, color: Color(0xFF66BB6A)),
-              SizedBox(width: 5),
+              const SizedBox(width: 5),
               Text(
                 'Logged',
-                style: TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF66BB6A),
-                    fontWeight: FontWeight.w600),
+                style: VitalPathTheme.patientData.copyWith(
+                  color: const Color(0xFF66BB6A),
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
           ),
         ],
 
-        // ── Clinical Lock notice ───────────────────────────────────────────
+        // Clinical lock notice
         if (entry.isLocked) ...[
           const SizedBox(height: 8),
           Row(
-            children: const [
-              Icon(Icons.lock_rounded, size: 12, color: Color(0xFF00897B)),
-              SizedBox(width: 5),
+            children: [
+              const Icon(Icons.lock_rounded,
+                  size: 12, color: VitalPathTheme.clinicalTeal),
+              const SizedBox(width: 5),
               Expanded(
                 child: Text(
-                  'Confirmed appointment — synced to your passbook',
-                  style: TextStyle(fontSize: 11.5, color: Color(0xFF00695C)),
+                  'Confirmed — synced to your passbook',
+                  style: VitalPathTheme.patientData.copyWith(
+                    color: VitalPathTheme.electricTeal.withValues(alpha: 0.7),
+                    fontSize: 11,
+                  ),
                 ),
               ),
             ],
@@ -412,27 +404,50 @@ class _CardBody extends StatelessWidget {
       ],
     );
   }
+
+  Color get _accentColor {
+    switch (entry.state) {
+      case TimelineEntryState.dueNow:
+        return VitalPathTheme.electricTeal;
+      case TimelineEntryState.upcoming:
+        return VitalPathTheme.clinicalTeal;
+      case TimelineEntryState.locked:
+        return VitalPathTheme.clinicalTeal;
+      case TimelineEntryState.missed:
+        return VitalPathTheme.alertAmber;
+      case TimelineEntryState.completed:
+        return Colors.grey;
+    }
+  }
+
+  Color get _iconBgColor =>
+      _accentColor.withValues(alpha: 0.15);
 }
 
-// ── State badge chip ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// State Badge Chip
+// ─────────────────────────────────────────────────────────────────────────────
 class _StateBadge extends StatelessWidget {
   final TimelineEntryState state;
-  final Color accentColor;
-
-  const _StateBadge({required this.state, required this.accentColor});
+  const _StateBadge({required this.state});
 
   String get _label {
     switch (state) {
-      case TimelineEntryState.dueNow:
-        return 'Due Now';
-      case TimelineEntryState.upcoming:
-        return 'Upcoming';
-      case TimelineEntryState.locked:
-        return 'Confirmed';
-      case TimelineEntryState.missed:
-        return 'Missed';
-      case TimelineEntryState.completed:
-        return 'Done';
+      case TimelineEntryState.dueNow:     return 'Due Now';
+      case TimelineEntryState.upcoming:   return 'Upcoming';
+      case TimelineEntryState.locked:     return 'Confirmed';
+      case TimelineEntryState.missed:     return 'Missed';
+      case TimelineEntryState.completed:  return 'Done';
+    }
+  }
+
+  Color get _color {
+    switch (state) {
+      case TimelineEntryState.dueNow:     return VitalPathTheme.electricTeal;
+      case TimelineEntryState.upcoming:   return VitalPathTheme.clinicalTeal;
+      case TimelineEntryState.locked:     return VitalPathTheme.clinicalTeal;
+      case TimelineEntryState.missed:     return VitalPathTheme.alertAmber;
+      case TimelineEntryState.completed:  return Colors.grey;
     }
   }
 
@@ -441,42 +456,35 @@ class _StateBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
       decoration: BoxDecoration(
-        color: accentColor.withOpacity(0.10),
+        color: _color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: accentColor.withOpacity(0.25)),
+        border: Border.all(color: _color.withValues(alpha: 0.3)),
       ),
       child: Text(
         _label,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          color: accentColor,
-          letterSpacing: 0.2,
-        ),
+        style: VitalPathTheme.labelMedium.copyWith(color: _color),
       ),
     );
   }
 }
 
-// ── Quick-Log chip button ─────────────────────────────────────────────────────
-class _QuickLogButton extends StatefulWidget {
+// ─────────────────────────────────────────────────────────────────────────────
+// Quick-Log chip (timeline card variant — smaller than bento Log button)
+// ─────────────────────────────────────────────────────────────────────────────
+class _QuickLogChip extends StatefulWidget {
   final TimelineEntry entry;
-  final Color accentColor;
-
-  const _QuickLogButton({required this.entry, required this.accentColor});
+  const _QuickLogChip({required this.entry});
 
   @override
-  State<_QuickLogButton> createState() => _QuickLogButtonState();
+  State<_QuickLogChip> createState() => _QuickLogChipState();
 }
 
-class _QuickLogButtonState extends State<_QuickLogButton> {
+class _QuickLogChipState extends State<_QuickLogChip> {
   bool _tapping = false;
 
   Future<void> _onTap(BuildContext context) async {
     if (_tapping) return;
-    // Immediate tactile feedback on tap-down before the async work begins.
     HapticFeedback.selectionClick();
-
     setState(() => _tapping = true);
 
     final provider = context.read<DashboardProvider>();
@@ -484,10 +492,8 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
       await provider.quickLog(
         entryId: widget.entry.id,
         medicineId: widget.entry.medicineId!,
-        isOnline: true, // real: inject ConnectivityService
       );
       if (!mounted) return;
-      // Celebratory haptic + success toast — the "win" moment.
       HapticService().doseLogged();
       SuccessToast.show(
         context,
@@ -512,8 +518,10 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Could not log dose: $e'),
-          backgroundColor: const Color(0xFFE53935),
+          backgroundColor: VitalPathTheme.errorRed,
           behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12)),
         ),
       );
     } finally {
@@ -525,45 +533,49 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
   Widget build(BuildContext context) {
     return SizedBox(
       width: double.infinity,
-      // 48dp minimum touch target (WCAG 2.5.5 / Material Design).
-      height: 48,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: _tapping ? null : () => _onTap(context),
-          borderRadius: BorderRadius.circular(10),
-          splashColor: widget.accentColor.withOpacity(0.08),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 9),
-            decoration: BoxDecoration(
-              color: widget.accentColor.withOpacity(0.07),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: widget.accentColor.withOpacity(0.2), width: 1),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (_tapping)
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: widget.accentColor),
-                  )
-                else
-                  Icon(Icons.medication_rounded,
-                      size: 15, color: widget.accentColor),
-                const SizedBox(width: 6),
-                Text(
-                  _tapping ? 'Logging…' : 'Log Dose',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: widget.accentColor,
-                  ),
+      height: 44,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Material(
+          color: VitalPathTheme.electricTeal.withValues(alpha: 0.10),
+          child: InkWell(
+            onTap: _tapping ? null : () => _onTap(context),
+            splashColor: VitalPathTheme.electricTeal.withValues(alpha: 0.3),
+            highlightColor: VitalPathTheme.electricTeal.withValues(alpha: 0.08),
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: VitalPathTheme.electricTeal.withValues(alpha: 0.25),
                 ),
-              ],
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Center(
+                child: _tapping
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: VitalPathTheme.electricTeal,
+                        ),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.medication_rounded,
+                              size: 14,
+                              color: VitalPathTheme.electricTeal),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Log Dose',
+                            style: VitalPathTheme.ctaPrimary.copyWith(
+                              color: VitalPathTheme.electricTeal,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+              ),
             ),
           ),
         ),
@@ -572,41 +584,54 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
   }
 }
 
-// ── Empty state ───────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Empty Timeline State
+// ─────────────────────────────────────────────────────────────────────────────
 class _EmptyTimelineState extends StatelessWidget {
   const _EmptyTimelineState();
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 24, 32, 32),
+      padding: const EdgeInsets.fromLTRB(32, 32, 32, 32),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: const Color(0xFFE6F7F4),
-              borderRadius: BorderRadius.circular(18),
+          GlassCard.dark(
+            borderRadius: BorderRadius.circular(20),
+            padding: const EdgeInsets.all(28),
+            child: Column(
+              children: [
+                Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color:
+                        VitalPathTheme.clinicalTeal.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: const Icon(Icons.event_available_rounded,
+                      size: 32, color: VitalPathTheme.electricTeal),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'All clear for today!',
+                  style: VitalPathTheme.headlineMedium.copyWith(
+                    color: Colors.white,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'No medicines, meals, or appointments\nscheduled yet for today.',
+                  textAlign: TextAlign.center,
+                  style: VitalPathTheme.bodyMedium.copyWith(
+                    color: Colors.white.withValues(alpha: 0.4),
+                    height: 1.5,
+                  ),
+                ),
+              ],
             ),
-            child: const Icon(Icons.event_available_rounded,
-                size: 32, color: Color(0xFF00897B)),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'All clear for today!',
-            style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF1A1A2E)),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'No medicines, meals, or appointments\nscheduled yet for today.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-                fontSize: 13.5, color: Color(0xFF9E9E9E), height: 1.5),
           ),
         ],
       ),
