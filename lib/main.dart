@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +16,7 @@ import 'package:vitalpath/screens/care_screen.dart';
 import 'package:vitalpath/screens/home_screen.dart';
 import 'package:vitalpath/screens/my_doctors_screen.dart';
 import 'package:vitalpath/screens/notification_settings_screen.dart';
+import 'package:vitalpath/screens/onboarding/onboarding_flow.dart';
 import 'package:vitalpath/screens/prescription_vault_screen.dart';
 import 'package:vitalpath/screens/privacy_settings_screen.dart';
 import 'package:vitalpath/services/auth_gate_service.dart';
@@ -65,7 +68,7 @@ class VitalpathApp extends StatelessWidget {
         title: 'VitalPath',
         debugShowCheckedModeBanner: false,
         theme: _buildTheme(),
-        home: const _AuthGateWrapper(),
+        home: const _AppRouter(),
       ),
     );
   }
@@ -95,6 +98,49 @@ class VitalpathApp extends StatelessWidget {
   }
 }
 
+// ── App router: checks onboarding then auth ───────────────────────────────────
+// First visit → OnboardingFlow. Returning user → _AuthGateWrapper.
+class _AppRouter extends StatefulWidget {
+  const _AppRouter();
+
+  @override
+  State<_AppRouter> createState() => _AppRouterState();
+}
+
+class _AppRouterState extends State<_AppRouter> {
+  bool? _onboardingComplete;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkOnboarding();
+  }
+
+  Future<void> _checkOnboarding() async {
+    final complete = await OnboardingFlow.isComplete();
+    if (mounted) setState(() => _onboardingComplete = complete);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_onboardingComplete == null) {
+      // Brief opaque splash while reading SharedPreferences (~16ms).
+      return const Scaffold(
+        backgroundColor: Color(0xFF00897B),
+        body: Center(
+          child: Icon(Icons.favorite_rounded, color: Colors.white, size: 48),
+        ),
+      );
+    }
+    if (!_onboardingComplete!) {
+      return OnboardingFlow(
+        onComplete: () => setState(() => _onboardingComplete = true),
+      );
+    }
+    return const _AuthGateWrapper();
+  }
+}
+
 // ── Auth gate wrapper ─────────────────────────────────────────────────────────
 // Sits above _AppShell. Checks the biometric session on cold start and every
 // time the app returns from background. Shows _LockScreen when session is
@@ -110,6 +156,7 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
     with WidgetsBindingObserver {
   bool _isLocked = false;
   bool _isPrompting = false;
+  int _failedAttempts = 0;
 
   @override
   void initState() {
@@ -142,7 +189,14 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
     _isPrompting = true;
     final success = await AuthGateService().authenticate();
     _isPrompting = false;
-    if (success && mounted) setState(() => _isLocked = false);
+    if (success && mounted) {
+      setState(() {
+        _isLocked = false;
+        _failedAttempts = 0;
+      });
+    } else if (!success && mounted) {
+      setState(() => _failedAttempts++);
+    }
   }
 
   @override
@@ -150,70 +204,151 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
     return Stack(
       children: [
         const _AppShell(),
-        if (_isLocked) _LockScreen(onUnlock: _promptAuth),
+        if (_isLocked)
+          _LockScreen(
+            onUnlock: _promptAuth,
+            failedAttempts: _failedAttempts,
+          ),
       ],
     );
   }
 }
 
+// Glass overlay lock screen: blurs the app underneath via BackdropFilter.
+// After 3 failed biometric attempts the fallback passcode button appears.
 class _LockScreen extends StatelessWidget {
   final VoidCallback onUnlock;
-  const _LockScreen({required this.onUnlock});
+  final int failedAttempts;
+
+  const _LockScreen({required this.onUnlock, this.failedAttempts = 0});
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0xFF1A1A2E),
-      child: SafeArea(
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF00897B),
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: const Icon(
-                  Icons.favorite_rounded,
-                  color: Colors.white,
-                  size: 40,
-                ),
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                'VitalPath',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.5,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Confirm your identity to continue',
-                style: TextStyle(
-                  color: Color(0xFF9E9E9E),
-                  fontSize: 14,
-                ),
-              ),
-              const SizedBox(height: 48),
-              FilledButton.icon(
-                onPressed: onUnlock,
-                icon: const Icon(Icons.fingerprint_rounded),
-                label: const Text('Unlock'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF00897B),
-                  minimumSize: const Size(160, 48),
-                ),
-              ),
-            ],
+    final showFallback = failedAttempts >= 3;
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // Blur layer — blurs the _AppShell behind the lock.
+        BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+          child: Container(
+            color: const Color(0xFF1A1A2E).withOpacity(0.72),
           ),
         ),
-      ),
+        // Glass card + unlock controls
+        SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(28),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(28, 32, 28, 28),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.09),
+                      borderRadius: BorderRadius.circular(28),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.15),
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // App icon
+                        Container(
+                          width: 72,
+                          height: 72,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF00897B),
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow: [
+                              BoxShadow(
+                                color:
+                                    const Color(0xFF00897B).withOpacity(0.4),
+                                blurRadius: 20,
+                                offset: const Offset(0, 6),
+                              ),
+                            ],
+                          ),
+                          child: const Icon(
+                            Icons.favorite_rounded,
+                            color: Colors.white,
+                            size: 36,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'VitalPath',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          showFallback
+                              ? 'Biometric unavailable — use your device passcode'
+                              : 'Confirm your identity to continue',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.55),
+                            fontSize: 13,
+                            height: 1.4,
+                          ),
+                        ),
+                        if (failedAttempts > 0 && !showFallback) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            '${3 - failedAttempts} attempt${3 - failedAttempts == 1 ? '' : 's'} remaining',
+                            style: const TextStyle(
+                              color: Color(0xFFEF9A9A),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 28),
+                        // Primary action
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: FilledButton.icon(
+                            onPressed: onUnlock,
+                            icon: Icon(
+                              showFallback
+                                  ? Icons.dialpad_rounded
+                                  : Icons.fingerprint_rounded,
+                              size: 22,
+                            ),
+                            label: Text(
+                              showFallback ? 'Use Passcode' : 'Unlock',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF00897B),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -43,6 +43,7 @@ import 'package:provider/provider.dart';
 
 import 'package:vitalpath/providers/dashboard_provider.dart';
 import 'package:vitalpath/services/health_service.dart';
+import 'package:vitalpath/widgets/bundle_card_widget.dart';
 import 'package:vitalpath/widgets/smart_timeline_widget.dart';
 import 'package:vitalpath/widgets/step_goal_widget.dart';
 
@@ -195,6 +196,9 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ),
+
+          // ── Bundle Card (appears when 2+ doses are due now) ───────────────
+          const SliverToBoxAdapter(child: BundleCard()),
 
           // ── Summary strip ────────────────────────────────────────────────
           SliverToBoxAdapter(
