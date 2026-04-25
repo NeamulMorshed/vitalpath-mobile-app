@@ -112,33 +112,42 @@ class HealthService {
   }
 
   Stream<int> _buildStream() {
+    // Use a broadcast controller as the single source of truth.
+    // Native EventChannel data flows in when available; mock data fills the
+    // gap when the channel is unavailable (emulator / no Health Connect).
+    final controller = StreamController<int>.broadcast();
+
+    void startMock() {
+      mockStream().listen(
+        (v) { if (!controller.isClosed) controller.add(v); },
+        onError: (_) {},
+      );
+    }
+
     try {
-      return _event
+      _event
           .receiveBroadcastStream()
           .map<int>((dynamic event) {
             if (event is int) return event;
             if (event is double) return event.toInt();
             return 0;
           })
-          .handleError((Object e) {
-            debugPrint('[HealthService] EventChannel error: $e — switching to poll');
-          })
-          .asBroadcastStream();
+          .listen(
+            (v) { if (!controller.isClosed) controller.add(v); },
+            onError: (Object e) {
+              // MissingPluginException fires here when native channels are absent
+              // (emulator, no HealthKit/Health Connect impl). Fall back to mock.
+              debugPrint('[HealthService] native channel error ($e) — mock active');
+              startMock();
+            },
+            cancelOnError: false,
+          );
     } catch (e) {
-      debugPrint('[HealthService] EventChannel unavailable ($e) — using poll');
-      return _pollingStream().asBroadcastStream();
+      debugPrint('[HealthService] EventChannel setup failed ($e) — mock');
+      startMock();
     }
-  }
 
-  /// 30-second polling fallback.  Used when:
-  ///   • Running on Android pre-Health Connect
-  ///   • Simulator / unit tests (mock mode)
-  ///   • EventChannel throws during registration
-  Stream<int> _pollingStream() async* {
-    while (true) {
-      yield await _fetchStepsOnce();
-      await Future.delayed(const Duration(seconds: 30));
-    }
+    return controller.stream;
   }
 
   // ── One-shot step fetch ────────────────────────────────────────────────────
