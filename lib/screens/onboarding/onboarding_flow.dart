@@ -599,7 +599,13 @@ class _Page2Identity extends StatefulWidget {
 class _Page2IdentityState extends State<_Page2Identity>
     with TickerProviderStateMixin {
   _AuthStage _stage = _AuthStage.idle;
-  final _googleSignIn = GoogleSignIn();
+  // serverClientId = the web OAuth client from google-services.json (type 3).
+  // Required on Android to guarantee that authentication.idToken is non-null,
+  // which is needed for the Firebase signInWithCredential call below.
+  final _googleSignIn = GoogleSignIn(
+    serverClientId:
+        '14070732014-675g8mpjel0j5t7i8rf0gdakog5o7uid.apps.googleusercontent.com',
+  );
 
   late final AnimationController _entryCtrl;
   late final Animation<double> _entryFade;

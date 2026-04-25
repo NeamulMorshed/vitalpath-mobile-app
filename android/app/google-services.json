@@ -12,7 +12,20 @@
           "package_name": "com.vitalpath.vitalpath"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "14070732014-d9ns07cf5gaj7liovt76alo1rj42oq6e.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.vitalpath.vitalpath",
+            "certificate_hash": "5a1df7bac15a4f0e720dfdb9253f3d1f27d4eebe"
+          }
+        },
+        {
+          "client_id": "14070732014-675g8mpjel0j5t7i8rf0gdakog5o7uid.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyD2-qRQVPxKvaiNSfnamYGbojtlNRi5mjs"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "14070732014-675g8mpjel0j5t7i8rf0gdakog5o7uid.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "14070732014-ivm2l2vgb1qb10gesttkkp2doqfc5p3u.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.vitalpath.vitalpath"
+              }
+            }
+          ]
         }
       }
     }
