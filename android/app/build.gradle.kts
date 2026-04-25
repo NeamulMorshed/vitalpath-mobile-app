@@ -27,7 +27,7 @@ android {
         applicationId = "com.vitalpath.vitalpath"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = 23 // Firebase requires minSdk 23; flutter.minSdkVersion defaults to 21
+        minSdk = flutter.minSdkVersion // Firebase + flutter_secure_storage require minSdk ≥ 23
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

@@ -32,15 +32,24 @@ final _restartNotifier = ValueNotifier<int>(0);
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  // Guard each async init step individually so a single failure can't prevent
+  // runApp() from being called — the app degrades gracefully rather than showing
+  // a blank native splash and silently dying.
+  try {
+    await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform);
+  } catch (e) {
+    debugPrint('[Firebase] Initialization failed: $e');
+  }
 
-  await Hive.initFlutter();
-  await Hive.openBox('sync_queue');
-
-  // Wire the offline sync queue to connectivity events.
-  // ConnectivityService will call flushQueue() automatically when the device
-  // comes back online after a Firebase outage or network loss.
-  await ConnectivityService().initialise(SyncQueueService());
+  try {
+    await Hive.initFlutter();
+    await Hive.openBox('sync_queue');
+    // Wire the offline sync queue to connectivity events.
+    await ConnectivityService().initialise(SyncQueueService());
+  } catch (e) {
+    debugPrint('[Init] Hive/Connectivity setup failed: $e');
+  }
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
