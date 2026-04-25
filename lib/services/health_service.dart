@@ -146,8 +146,9 @@ class HealthService {
     try {
       final result = await _method.invokeMethod<int>('getTodaySteps');
       return result ?? 0;
-    } on PlatformException catch (e) {
-      debugPrint('[HealthService] getTodaySteps failed: ${e.message}');
+    } catch (e) {
+      // Catches both PlatformException and MissingPluginException (no native impl).
+      debugPrint('[HealthService] getTodaySteps failed: $e');
       return 0;
     }
   }
@@ -166,8 +167,9 @@ class HealthService {
         _stepsStream = null;
       }
       return granted;
-    } on PlatformException catch (e) {
-      debugPrint('[HealthService] requestPermissions error: ${e.message}');
+    } catch (e) {
+      // Catches both PlatformException and MissingPluginException (no native impl).
+      debugPrint('[HealthService] requestPermissions error: $e');
       return false;
     }
   }
