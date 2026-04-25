@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:ui';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:vitalpath/theme/vitalpath_theme.dart';
@@ -598,6 +599,7 @@ class _Page2Identity extends StatefulWidget {
 class _Page2IdentityState extends State<_Page2Identity>
     with TickerProviderStateMixin {
   _AuthStage _stage = _AuthStage.idle;
+  final _googleSignIn = GoogleSignIn();
 
   late final AnimationController _entryCtrl;
   late final Animation<double> _entryFade;
@@ -645,10 +647,46 @@ class _Page2IdentityState extends State<_Page2Identity>
     HapticFeedback.lightImpact();
     setState(() => _stage = _AuthStage.loading);
 
-    // Simulate auth network call — 1.6s shimmer window
-    await Future.delayed(const Duration(milliseconds: 1600));
+    try {
+      // Launch the Google account picker. Returns null if the user cancels.
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        // User dismissed the picker — go back to idle so they can try again.
+        if (mounted) setState(() => _stage = _AuthStage.idle);
+        return;
+      }
 
-    if (mounted) setState(() => _stage = _AuthStage.biometric);
+      // Exchange the Google tokens for a Firebase credential.
+      final googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+      await FirebaseAuth.instance.signInWithCredential(credential);
+
+      if (mounted) setState(() => _stage = _AuthStage.biometric);
+    } catch (e) {
+      debugPrint('[GoogleAuth] Sign-in failed: $e');
+      if (!mounted) return;
+
+      // Google Sign-In requires OAuth to be configured in Firebase Console
+      // (SHA-1 fingerprint + Google provider enabled). Until then, show a
+      // brief notice and proceed so testers can verify the rest of the flow.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Google Sign-In needs Firebase OAuth setup — continuing for now.',
+          ),
+          backgroundColor: const Color(0xFF1A1A2E),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      await Future.delayed(const Duration(milliseconds: 900));
+      if (mounted) setState(() => _stage = _AuthStage.biometric);
+    }
   }
 
   Future<void> _onBiometric() async {

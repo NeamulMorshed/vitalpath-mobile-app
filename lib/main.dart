@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:firebase_core/firebase_core.dart';
@@ -29,34 +30,38 @@ import 'package:vitalpath/services/sync_queue_service.dart';
 // Used by the Developer tile to replay the full onboarding flow.
 final _restartNotifier = ValueNotifier<int>(0);
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() {
+  // Zone-level guard: catches any unhandled Dart async exceptions that escape
+  // all inner try-catch blocks, preventing silent isolate death that appears
+  // to the user as a "stuck on splash" black screen.
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  // Guard each async init step individually so a single failure can't prevent
-  // runApp() from being called — the app degrades gracefully rather than showing
-  // a blank native splash and silently dying.
-  try {
-    await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform);
-  } catch (e) {
-    debugPrint('[Firebase] Initialization failed: $e');
-  }
+    // Guard each async init step so a single failure can't block runApp().
+    try {
+      await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform);
+    } catch (e) {
+      debugPrint('[Firebase] Initialization failed: $e');
+    }
 
-  try {
-    await Hive.initFlutter();
-    await Hive.openBox('sync_queue');
-    // Wire the offline sync queue to connectivity events.
-    await ConnectivityService().initialise(SyncQueueService());
-  } catch (e) {
-    debugPrint('[Init] Hive/Connectivity setup failed: $e');
-  }
+    try {
+      await Hive.initFlutter();
+      await Hive.openBox('sync_queue');
+      await ConnectivityService().initialise(SyncQueueService());
+    } catch (e) {
+      debugPrint('[Init] Hive/Connectivity setup failed: $e');
+    }
 
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.dark,
-  ));
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+    ));
 
-  runApp(const VitalpathApp());
+    runApp(const VitalpathApp());
+  }, (Object error, StackTrace stack) {
+    debugPrint('[UncaughtError] $error');
+  });
 }
 
 class VitalpathApp extends StatelessWidget {
