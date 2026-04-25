@@ -18,7 +18,9 @@ import 'package:flutter/services.dart';
 import 'package:vitalpath/theme/vitalpath_theme.dart';
 
 class DoctorPortalScreen extends StatefulWidget {
-  const DoctorPortalScreen({super.key});
+  // null = modal mode (pop on exit); non-null = main-shell mode (custom action)
+  final VoidCallback? onExit;
+  const DoctorPortalScreen({super.key, this.onExit});
 
   static Route<void> route() {
     return PageRouteBuilder<void>(
@@ -59,7 +61,10 @@ class _DoctorPortalScreenState extends State<DoctorPortalScreen> {
           _OverviewTab(onGoToPatients: () => setState(() => _tab = 1)),
           const _PatientsTab(),
           const _VerifyTab(),
-          _DoctorProfileTab(onExit: () => Navigator.of(context).pop()),
+          _DoctorProfileTab(
+            onExit: widget.onExit ?? () => Navigator.of(context).pop(),
+            isMainShell: widget.onExit != null,
+          ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -530,7 +535,9 @@ class _VerifyTab extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 class _DoctorProfileTab extends StatelessWidget {
   final VoidCallback onExit;
-  const _DoctorProfileTab({required this.onExit});
+  final bool isMainShell;
+  const _DoctorProfileTab(
+      {required this.onExit, this.isMainShell = false});
 
   @override
   Widget build(BuildContext context) {
@@ -650,8 +657,14 @@ class _DoctorProfileTab extends StatelessWidget {
                 HapticFeedback.lightImpact();
                 onExit();
               },
-              icon: const Icon(Icons.arrow_back_rounded, size: 18),
-              label: const Text('Back to Patient View'),
+              icon: Icon(
+                isMainShell
+                    ? Icons.switch_account_rounded
+                    : Icons.arrow_back_rounded,
+                size: 18,
+              ),
+              label: Text(
+                  isMainShell ? 'Switch Account' : 'Back to Patient View'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: VitalPathTheme.clinicalTeal,
                 side: const BorderSide(color: Color(0xFF00897B)),

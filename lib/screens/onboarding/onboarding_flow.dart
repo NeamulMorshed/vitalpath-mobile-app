@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:vitalpath/models/user_profile_model.dart';
+import 'package:vitalpath/services/user_profile_service.dart';
 import 'package:vitalpath/theme/vitalpath_theme.dart';
 import 'package:vitalpath/widgets/glass_card.dart';
 
@@ -70,8 +72,11 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     }
   }
 
-  Future<void> _finish() async {
+  Future<void> _finish([UserProfileModel? profile]) async {
     HapticFeedback.lightImpact();
+    if (profile != null) {
+      await UserProfileService().saveProfile(profile);
+    }
     await OnboardingFlow.markComplete();
     widget.onComplete();
   }
@@ -93,7 +98,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
               children: [
                 RepaintBoundary(child: _Page1ValueProp(onNext: _goNext)),
                 RepaintBoundary(child: _Page2Identity(onNext: _goNext)),
-                RepaintBoundary(child: _Page3Activation(onFinish: _finish)),
+                RepaintBoundary(child: _Page3ProfileSetup(onFinish: _finish)),
               ],
             ),
 
@@ -1046,311 +1051,661 @@ class _SecurityBadge extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PAGE 3 — Initial Activation
+// PAGE 3 — Role Selection + Personalised Profile Setup
 // ─────────────────────────────────────────────────────────────────────────────
-class _Page3Activation extends StatefulWidget {
-  final VoidCallback onFinish;
-  const _Page3Activation({required this.onFinish});
+class _Page3ProfileSetup extends StatefulWidget {
+  final Future<void> Function([UserProfileModel?]) onFinish;
+  const _Page3ProfileSetup({required this.onFinish});
 
   @override
-  State<_Page3Activation> createState() => _Page3ActivationState();
+  State<_Page3ProfileSetup> createState() => _Page3ProfileSetupState();
 }
 
-class _Page3ActivationState extends State<_Page3Activation>
+class _Page3ProfileSetupState extends State<_Page3ProfileSetup>
     with SingleTickerProviderStateMixin {
-  final _nameController = TextEditingController();
-  int? _selectedGoal;
-  bool _doctorInvited = false;
+  // 0 = role selection, 1 = profile fields
+  int _step = 0;
+  UserRole? _selectedRole;
 
-  late final AnimationController _entryCtrl;
+  // Shared
+  final _nameCtrl = TextEditingController();
+
+  // Patient-specific
+  int? _selectedGoal;
+  final _conditionCtrl = TextEditingController();
+  final _emergencyNameCtrl = TextEditingController();
+  final _emergencyPhoneCtrl = TextEditingController();
+
+  // Doctor-specific
+  final _specialtyCtrl = TextEditingController();
+  final _clinicCtrl = TextEditingController();
+  final _licenseCtrl = TextEditingController();
+
+  // Family-specific
+  String? _selectedRelationship;
+  final _linkedPatientCtrl = TextEditingController();
+
+  late final AnimationController _ctrl;
   late final Animation<double> _fade;
   late final Animation<Offset> _slide;
 
-  static const _goals = [
-    (Icons.medication_rounded,    'Medication\nAdherence'),
-    (Icons.monitor_weight_rounded,'Weight &\nNutrition'),
-    (Icons.favorite_rounded,      'Chronic\nDisease'),
+  static const _patientGoals = [
+    (Icons.medication_rounded, 'Medication\nAdherence'),
+    (Icons.monitor_weight_rounded, 'Weight &\nNutrition'),
+    (Icons.favorite_rounded, 'Chronic\nDisease'),
     (Icons.self_improvement_rounded, 'General\nWellness'),
+  ];
+
+  static const _relationships = [
+    'Spouse / Partner',
+    'Parent',
+    'Child',
+    'Sibling',
+    'Caregiver',
+    'Other',
   ];
 
   @override
   void initState() {
     super.initState();
-    _entryCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 700),
-    )..forward();
-
-    _fade = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _entryCtrl, curve: Curves.easeOut),
-    );
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 700))
+      ..forward();
+    _fade = Tween<double>(begin: 0.0, end: 1.0)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
     _slide = Tween<Offset>(
-      begin: const Offset(0, 0.15),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _entryCtrl, curve: Curves.easeOutCubic));
+            begin: const Offset(0, 0.15), end: Offset.zero)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
   }
 
   @override
   void dispose() {
-    _nameController.dispose();
-    _entryCtrl.dispose();
+    _ctrl.dispose();
+    _nameCtrl.dispose();
+    _conditionCtrl.dispose();
+    _emergencyNameCtrl.dispose();
+    _emergencyPhoneCtrl.dispose();
+    _specialtyCtrl.dispose();
+    _clinicCtrl.dispose();
+    _licenseCtrl.dispose();
+    _linkedPatientCtrl.dispose();
     super.dispose();
+  }
+
+  void _advanceToProfile(UserRole role) {
+    HapticFeedback.lightImpact();
+    _ctrl.reset();
+    _ctrl.forward();
+    setState(() {
+      _selectedRole = role;
+      _step = 1;
+    });
+  }
+
+  void _goBackToRoleSelection() {
+    _ctrl.reset();
+    _ctrl.forward();
+    setState(() => _step = 0);
+  }
+
+  Future<void> _submit() async {
+    final name = _nameCtrl.text.trim();
+    final role = _selectedRole ?? UserRole.patient;
+
+    String? syncCode;
+    if (role == UserRole.doctor) {
+      // Generate a stable 6-digit doctor sync code from the license or timestamp
+      final seed = _licenseCtrl.text.trim().isNotEmpty
+          ? _licenseCtrl.text.trim().hashCode.abs() % 900000 + 100000
+          : (DateTime.now().millisecondsSinceEpoch % 900000 + 100000);
+      syncCode = seed.toString();
+    }
+
+    final profile = UserProfileModel(
+      role: role,
+      displayName: name.isNotEmpty ? name : 'VitalPath User',
+      primaryCondition:
+          role == UserRole.patient ? _conditionCtrl.text.trim() : null,
+      emergencyContactName:
+          role == UserRole.patient ? _emergencyNameCtrl.text.trim() : null,
+      emergencyContactPhone:
+          role == UserRole.patient ? _emergencyPhoneCtrl.text.trim() : null,
+      specialty:
+          role == UserRole.doctor ? _specialtyCtrl.text.trim() : null,
+      clinicName:
+          role == UserRole.doctor ? _clinicCtrl.text.trim() : null,
+      licenseNumber:
+          role == UserRole.doctor ? _licenseCtrl.text.trim() : null,
+      doctorSyncCode: syncCode,
+      relationship: role == UserRole.familyMember
+          ? _selectedRelationship
+          : null,
+      linkedPatientName: role == UserRole.familyMember
+          ? _linkedPatientCtrl.text.trim()
+          : null,
+    );
+    await widget.onFinish(profile);
   }
 
   @override
   Widget build(BuildContext context) {
     final topPad = MediaQuery.of(context).padding.top;
-
     return GestureDetector(
       onTap: () => FocusScope.of(context).unfocus(),
       child: Container(
-        decoration: const BoxDecoration(gradient: VitalPathTheme.darkGradient),
+        decoration:
+            const BoxDecoration(gradient: VitalPathTheme.darkGradient),
         child: FadeTransition(
           opacity: _fade,
           child: SlideTransition(
             position: _slide,
-            child: SingleChildScrollView(
-              padding:
-                  EdgeInsets.fromLTRB(24, topPad + 24, 24, 80),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // ── Header ─────────────────────────────────────────────────
-                  Row(
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Final Step.',
-                            style: VitalPathTheme.displayMedium.copyWith(
-                              color: Colors.white,
-                            ),
-                          ),
-                          Text(
-                            'Tell us about yourself.',
-                            style: VitalPathTheme.bodyLarge.copyWith(
-                              color: Colors.white.withValues(alpha: 0.45),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const Spacer(),
-                      _StepChip(label: '03 / 03'),
-                    ],
-                  ),
-                  const SizedBox(height: 32),
+            child: _step == 0
+                ? _buildRoleSelection(topPad)
+                : _buildProfileFields(topPad),
+          ),
+        ),
+      ),
+    );
+  }
 
-                  // ── Name field ─────────────────────────────────────────────
-                  _FieldLabel('Your Name'),
-                  const SizedBox(height: 10),
-                  GlassCard.dark(
-                    borderRadius: BorderRadius.circular(14),
-                    padding: EdgeInsets.zero,
-                    child: TextFormField(
-                      controller: _nameController,
-                      style: VitalPathTheme.bodyLarge.copyWith(
-                        color: Colors.white,
-                      ),
-                      textCapitalization: TextCapitalization.words,
-                      decoration: InputDecoration(
-                        hintText: 'e.g. Arif Hossain',
-                        hintStyle: VitalPathTheme.bodyLarge.copyWith(
-                          color: Colors.white.withValues(alpha: 0.25),
-                        ),
-                        prefixIcon: const Icon(
-                          Icons.person_outline_rounded,
-                          color: VitalPathTheme.electricTeal,
-                          size: 20,
-                        ),
-                        border: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 16),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  // ── Primary Health Goal ────────────────────────────────────
-                  _FieldLabel('Primary Health Goal'),
-                  const SizedBox(height: 10),
-                  // Variable Typography: selected goal uses w800 (heavy),
-                  // unselected uses w400 (light) — visual hierarchy at a glance.
-                  GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                      childAspectRatio: 1.8,
-                    ),
-                    itemCount: _goals.length,
-                    itemBuilder: (_, i) {
-                      final selected = _selectedGoal == i;
-                      final (icon, label) = _goals[i];
-                      return GestureDetector(
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          setState(() => _selectedGoal = i);
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 220),
-                          decoration: BoxDecoration(
-                            gradient: selected
-                                ? VitalPathTheme.tealGradient
-                                : null,
-                            color: selected
-                                ? null
-                                : Colors.white.withValues(alpha: 0.06),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: selected
-                                  ? VitalPathTheme.electricTeal
-                                      .withValues(alpha: 0.6)
-                                  : Colors.white.withValues(alpha: 0.1),
-                            ),
-                            boxShadow: selected
-                                ? VitalPathTheme.tealGlowShadow(
-                                    intensity: 0.6)
-                                : null,
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 10),
-                          child: Row(
-                            children: [
-                              Icon(
-                                icon,
-                                color: selected
-                                    ? Colors.white
-                                    : Colors.white
-                                        .withValues(alpha: 0.4),
-                                size: 18,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  label,
-                                  // Variable typography: w800 when selected
-                                  style: TextStyle(
-                                    color: selected
-                                        ? Colors.white
-                                        : Colors.white
-                                            .withValues(alpha: 0.45),
-                                    fontSize: 12,
-                                    fontWeight: selected
-                                        ? FontWeight.w800
-                                        : FontWeight.w400,
-                                    height: 1.3,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 24),
-
-                  // ── Invite your Doctor CTA ────────────────────────────────
-                  GestureDetector(
-                    onTap: () {
-                      HapticFeedback.lightImpact();
-                      setState(() => _doctorInvited = !_doctorInvited);
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 220),
-                      decoration: BoxDecoration(
-                        color: _doctorInvited
-                            ? VitalPathTheme.verifiedGold
-                                .withValues(alpha: 0.12)
-                            : Colors.white.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: _doctorInvited
-                              ? VitalPathTheme.verifiedGold
-                                  .withValues(alpha: 0.4)
-                              : Colors.white.withValues(alpha: 0.1),
-                          width: 1.2,
-                        ),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 18, vertical: 14),
-                      child: Row(
-                        children: [
-                          Icon(
-                            _doctorInvited
-                                ? Icons.check_circle_rounded
-                                : Icons.people_alt_outlined,
-                            color: _doctorInvited
-                                ? VitalPathTheme.verifiedGold
-                                : Colors.white.withValues(alpha: 0.45),
-                            size: 22,
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Invite Your Doctor',
-                                  // Variable typography: CTA label uses w700
-                                  style: VitalPathTheme.ctaSecondary.copyWith(
-                                    color: _doctorInvited
-                                        ? VitalPathTheme.verifiedGold
-                                        : Colors.white,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15,
-                                  ),
-                                ),
-                                Text(
-                                  _doctorInvited
-                                      ? "Reminder added — we'll send the link"
-                                      : 'Share a sync code after setup',
-                                  style: VitalPathTheme.bodyMedium.copyWith(
-                                    color: Colors.white.withValues(alpha: 0.4),
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Icon(
-                            Icons.chevron_right_rounded,
-                            color: Colors.white.withValues(alpha: 0.2),
-                            size: 18,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-
-                  // ── Primary CTA — heaviest weight, full width ──────────────
-                  _PrimaryButton(
-                    label: 'Start My Health Journey',
-                    icon: Icons.favorite_rounded,
-                    onPressed: () {
-                      HapticFeedback.lightImpact();
-                      widget.onFinish();
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  Center(
-                    child: Text(
-                      'You can update all of this later in Profile.',
-                      style: VitalPathTheme.bodyMedium.copyWith(
-                        color: Colors.white.withValues(alpha: 0.28),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+  // ── Step 0: Role Selection ─────────────────────────────────────────────────
+  Widget _buildRoleSelection(double topPad) {
+    return SingleChildScrollView(
+      padding: EdgeInsets.fromLTRB(24, topPad + 24, 24, 80),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Spacer(),
+            _StepChip(label: '03 / 03'),
+          ]),
+          const SizedBox(height: 28),
+          Text('Who are you?',
+              style:
+                  VitalPathTheme.displayMedium.copyWith(color: Colors.white)),
+          const SizedBox(height: 8),
+          Text('Choose your role to personalise your experience.',
+              style: VitalPathTheme.bodyLarge
+                  .copyWith(color: Colors.white.withValues(alpha: 0.45))),
+          const SizedBox(height: 32),
+          _RoleCard(
+            icon: Icons.person_rounded,
+            title: 'Patient',
+            subtitle:
+                'Track medications, appointments, activity & wellness.',
+            gradient: VitalPathTheme.tealGradient,
+            glowColor: VitalPathTheme.electricTeal,
+            onTap: () => _advanceToProfile(UserRole.patient),
+          ),
+          const SizedBox(height: 14),
+          _RoleCard(
+            icon: Icons.local_hospital_rounded,
+            title: 'Doctor',
+            subtitle:
+                'Manage patients, verify prescriptions & appointments.',
+            gradient: const LinearGradient(
+              colors: [Color(0xFF3D5AFE), Color(0xFF7C4DFF)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            glowColor: const Color(0xFF3D5AFE),
+            onTap: () => _advanceToProfile(UserRole.doctor),
+          ),
+          const SizedBox(height: 14),
+          _RoleCard(
+            icon: Icons.people_rounded,
+            title: 'Family Member',
+            subtitle:
+                'Monitor a loved one\'s health, access emergency info.',
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFF6B35), Color(0xFFFF8C42)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            glowColor: const Color(0xFFFF6B35),
+            onTap: () => _advanceToProfile(UserRole.familyMember),
+          ),
+          const SizedBox(height: 24),
+          Center(
+            child: Text(
+              'You can update your role later in Profile.',
+              style: VitalPathTheme.bodyMedium.copyWith(
+                  color: Colors.white.withValues(alpha: 0.28), fontSize: 12),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  // ── Step 1: Role-Specific Profile Fields ───────────────────────────────────
+  Widget _buildProfileFields(double topPad) {
+    return SingleChildScrollView(
+      padding: EdgeInsets.fromLTRB(24, topPad + 24, 24, 80),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Back + step chip
+          Row(children: [
+            GestureDetector(
+              onTap: _goBackToRoleSelection,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.15)),
+                ),
+                child: Row(children: [
+                  Icon(Icons.arrow_back_ios_rounded,
+                      size: 12,
+                      color: Colors.white.withValues(alpha: 0.7)),
+                  const SizedBox(width: 4),
+                  Text('Back',
+                      style: VitalPathTheme.labelMedium.copyWith(
+                          color: Colors.white.withValues(alpha: 0.7))),
+                ]),
+              ),
+            ),
+            const Spacer(),
+            _StepChip(label: '03 / 03'),
+          ]),
+          const SizedBox(height: 24),
+          Text('Your Profile',
+              style:
+                  VitalPathTheme.displayMedium.copyWith(color: Colors.white)),
+          const SizedBox(height: 6),
+          Text(
+            _selectedRole == UserRole.doctor
+                ? 'Set up your clinical identity.'
+                : _selectedRole == UserRole.familyMember
+                    ? 'Tell us about the patient you\'re monitoring.'
+                    : 'Personalise your health passbook.',
+            style: VitalPathTheme.bodyLarge
+                .copyWith(color: Colors.white.withValues(alpha: 0.45)),
+          ),
+          const SizedBox(height: 28),
+
+          // ── Name (all roles) ───────────────────────────────────────────────
+          _FieldLabel('Your Full Name'),
+          const SizedBox(height: 8),
+          _GlassTextField(
+            controller: _nameCtrl,
+            hint: _selectedRole == UserRole.doctor
+                ? 'Dr. Kamal Hossain'
+                : 'e.g. Arif Rahman',
+            icon: Icons.person_outline_rounded,
+          ),
+          const SizedBox(height: 20),
+
+          // ── Role-specific fields ───────────────────────────────────────────
+          if (_selectedRole == UserRole.patient) ..._patientFields(),
+          if (_selectedRole == UserRole.doctor) ..._doctorFields(),
+          if (_selectedRole == UserRole.familyMember)
+            ..._familyFields(),
+
+          const SizedBox(height: 32),
+
+          // ── CTA ────────────────────────────────────────────────────────────
+          _PrimaryButton(
+            label: _selectedRole == UserRole.doctor
+                ? 'Set Up Doctor Portal'
+                : _selectedRole == UserRole.familyMember
+                    ? 'Start Monitoring'
+                    : 'Start My Health Journey',
+            icon: _selectedRole == UserRole.doctor
+                ? Icons.local_hospital_rounded
+                : _selectedRole == UserRole.familyMember
+                    ? Icons.favorite_rounded
+                    : Icons.favorite_rounded,
+            onPressed: _submit,
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: Text(
+              'All fields are optional — you can update them in Profile.',
+              style: VitalPathTheme.bodyMedium.copyWith(
+                  color: Colors.white.withValues(alpha: 0.28), fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _patientFields() => [
+        _FieldLabel('Primary Condition (Optional)'),
+        const SizedBox(height: 8),
+        _GlassTextField(
+          controller: _conditionCtrl,
+          hint: 'e.g. Type 2 Diabetes',
+          icon: Icons.medical_information_outlined,
+        ),
+        const SizedBox(height: 20),
+        _FieldLabel('Health Goal'),
+        const SizedBox(height: 10),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 1.8,
+          ),
+          itemCount: _patientGoals.length,
+          itemBuilder: (_, i) {
+            final selected = _selectedGoal == i;
+            final (icon, label) = _patientGoals[i];
+            return GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _selectedGoal = i);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                decoration: BoxDecoration(
+                  gradient: selected ? VitalPathTheme.tealGradient : null,
+                  color: selected
+                      ? null
+                      : Colors.white.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: selected
+                        ? VitalPathTheme.electricTeal.withValues(alpha: 0.6)
+                        : Colors.white.withValues(alpha: 0.1),
+                  ),
+                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                child: Row(children: [
+                  Icon(icon,
+                      color: selected
+                          ? Colors.white
+                          : Colors.white.withValues(alpha: 0.4),
+                      size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(label,
+                        style: TextStyle(
+                          color: selected
+                              ? Colors.white
+                              : Colors.white.withValues(alpha: 0.45),
+                          fontSize: 12,
+                          fontWeight: selected
+                              ? FontWeight.w800
+                              : FontWeight.w400,
+                          height: 1.3,
+                        )),
+                  ),
+                ]),
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 20),
+        _FieldLabel('Emergency Contact Name (Optional)'),
+        const SizedBox(height: 8),
+        _GlassTextField(
+          controller: _emergencyNameCtrl,
+          hint: 'e.g. Fatima Rahman',
+          icon: Icons.emergency_outlined,
+        ),
+        const SizedBox(height: 14),
+        _FieldLabel('Emergency Contact Phone (Optional)'),
+        const SizedBox(height: 8),
+        _GlassTextField(
+          controller: _emergencyPhoneCtrl,
+          hint: '+880 1X XXXX XXXX',
+          icon: Icons.phone_outlined,
+          keyboardType: TextInputType.phone,
+        ),
+      ];
+
+  List<Widget> _doctorFields() => [
+        _FieldLabel('Specialty'),
+        const SizedBox(height: 8),
+        _GlassTextField(
+          controller: _specialtyCtrl,
+          hint: 'e.g. Cardiology',
+          icon: Icons.science_outlined,
+        ),
+        const SizedBox(height: 20),
+        _FieldLabel('Clinic / Hospital'),
+        const SizedBox(height: 8),
+        _GlassTextField(
+          controller: _clinicCtrl,
+          hint: 'e.g. Dhaka Medical College',
+          icon: Icons.business_outlined,
+        ),
+        const SizedBox(height: 20),
+        _FieldLabel('Medical License Number (Optional)'),
+        const SizedBox(height: 8),
+        _GlassTextField(
+          controller: _licenseCtrl,
+          hint: 'e.g. BMDC-123456',
+          icon: Icons.badge_outlined,
+        ),
+        const SizedBox(height: 20),
+        GlassCard.dark(
+          borderRadius: BorderRadius.circular(14),
+          padding: const EdgeInsets.all(16),
+          child: Row(children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color(0xFF3D5AFE).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.info_outline_rounded,
+                  color: Color(0xFF7C8DFF), size: 20),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                'Your doctor sync code will be generated automatically after setup. Share it with patients to link their accounts.',
+                style: VitalPathTheme.bodyMedium.copyWith(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 12,
+                    height: 1.5),
+              ),
+            ),
+          ]),
+        ),
+      ];
+
+  List<Widget> _familyFields() => [
+        _FieldLabel('Your Relationship to the Patient'),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _relationships.map((r) {
+            final sel = _selectedRelationship == r;
+            return GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _selectedRelationship = r);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  gradient:
+                      sel ? VitalPathTheme.tealGradient : null,
+                  color: sel
+                      ? null
+                      : Colors.white.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: sel
+                        ? VitalPathTheme.electricTeal
+                            .withValues(alpha: 0.6)
+                        : Colors.white.withValues(alpha: 0.12),
+                  ),
+                ),
+                child: Text(r,
+                    style: TextStyle(
+                      color: sel
+                          ? Colors.white
+                          : Colors.white.withValues(alpha: 0.55),
+                      fontSize: 13,
+                      fontWeight: sel
+                          ? FontWeight.w700
+                          : FontWeight.w400,
+                    )),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 20),
+        _FieldLabel("Patient's Name"),
+        const SizedBox(height: 8),
+        _GlassTextField(
+          controller: _linkedPatientCtrl,
+          hint: 'e.g. Arif Rahman',
+          icon: Icons.person_search_outlined,
+        ),
+        const SizedBox(height: 20),
+        GlassCard.dark(
+          borderRadius: BorderRadius.circular(14),
+          padding: const EdgeInsets.all(16),
+          child: Row(children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF6B35).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.emergency_share_rounded,
+                  color: Color(0xFFFF8C42), size: 20),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                'You will have read-only access to your linked patient\'s medications, appointments and emergency info.',
+                style: VitalPathTheme.bodyMedium.copyWith(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 12,
+                    height: 1.5),
+              ),
+            ),
+          ]),
+        ),
+      ];
+}
+
+// Role selection card
+class _RoleCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final LinearGradient gradient;
+  final Color glowColor;
+  final VoidCallback onTap;
+
+  const _RoleCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.gradient,
+    required this.glowColor,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(18),
+          border:
+              Border.all(color: Colors.white.withValues(alpha: 0.1)),
+        ),
+        child: Row(children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              gradient: gradient,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                  color: glowColor.withValues(alpha: 0.35),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Icon(icon, color: Colors.white, size: 26),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: VitalPathTheme.headlineMedium.copyWith(
+                        color: Colors.white, fontSize: 16)),
+                const SizedBox(height: 4),
+                Text(subtitle,
+                    style: VitalPathTheme.bodyMedium.copyWith(
+                        color: Colors.white.withValues(alpha: 0.45),
+                        fontSize: 12,
+                        height: 1.4)),
+              ],
+            ),
+          ),
+          Icon(Icons.arrow_forward_ios_rounded,
+              size: 16, color: Colors.white.withValues(alpha: 0.3)),
+        ]),
+      ),
+    );
+  }
+}
+
+// Reusable glass text field for profile setup
+class _GlassTextField extends StatelessWidget {
+  final TextEditingController controller;
+  final String hint;
+  final IconData icon;
+  final TextInputType? keyboardType;
+
+  const _GlassTextField({
+    required this.controller,
+    required this.hint,
+    required this.icon,
+    this.keyboardType,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassCard.dark(
+      borderRadius: BorderRadius.circular(14),
+      padding: EdgeInsets.zero,
+      child: TextFormField(
+        controller: controller,
+        keyboardType: keyboardType,
+        textCapitalization: TextCapitalization.words,
+        style: VitalPathTheme.bodyLarge.copyWith(color: Colors.white),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: VitalPathTheme.bodyLarge
+              .copyWith(color: Colors.white.withValues(alpha: 0.25)),
+          prefixIcon:
+              Icon(icon, color: VitalPathTheme.electricTeal, size: 20),
+          border: InputBorder.none,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         ),
       ),
     );

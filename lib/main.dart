@@ -22,8 +22,11 @@ import 'package:vitalpath/screens/my_doctors_screen.dart';
 import 'package:vitalpath/screens/notification_settings_screen.dart';
 import 'package:vitalpath/screens/onboarding/onboarding_flow.dart';
 import 'package:vitalpath/screens/privacy_settings_screen.dart';
+import 'package:vitalpath/models/user_profile_model.dart';
+import 'package:vitalpath/screens/family/family_app_shell.dart';
 import 'package:vitalpath/services/auth_gate_service.dart';
 import 'package:vitalpath/services/sync_queue_service.dart';
+import 'package:vitalpath/services/user_profile_service.dart';
 
 // Incrementing this notifier causes VitalpathApp to rebuild from scratch —
 // fresh providers and a new _AppRouter that re-reads SharedPreferences.
@@ -101,6 +104,7 @@ class VitalpathApp extends StatelessWidget {
   // re-reads SharedPreferences and shows the splash + onboarding from scratch.
   static Future<void> restartFromSplash() async {
     await OnboardingFlow.reset();
+    await UserProfileService().clear();
     _restartNotifier.value++;
   }
 
@@ -140,6 +144,7 @@ class _AppRouter extends StatefulWidget {
 
 class _AppRouterState extends State<_AppRouter> {
   bool? _onboardingComplete;
+  UserRole? _userRole;
 
   @override
   void initState() {
@@ -149,7 +154,36 @@ class _AppRouterState extends State<_AppRouter> {
 
   Future<void> _checkOnboarding() async {
     final complete = await OnboardingFlow.isComplete();
-    if (mounted) setState(() => _onboardingComplete = complete);
+    UserRole? role;
+    if (complete) {
+      role = await UserProfileService().getRole();
+    }
+    if (mounted) {
+      setState(() {
+        _onboardingComplete = complete;
+        _userRole = role;
+      });
+    }
+  }
+
+  Widget _shellForRole(UserRole? role) {
+    switch (role) {
+      case UserRole.doctor:
+        return _AuthGateWrapper(
+          shell: DoctorPortalScreen(
+            onExit: () async => VitalpathApp.restartFromSplash(),
+          ),
+        );
+      case UserRole.familyMember:
+        return _AuthGateWrapper(
+          shell: FamilyAppShell(
+            onSwitchAccount: () async => VitalpathApp.restartFromSplash(),
+          ),
+        );
+      case UserRole.patient:
+      default:
+        return const _AuthGateWrapper(shell: _AppShell());
+    }
   }
 
   @override
@@ -165,10 +199,19 @@ class _AppRouterState extends State<_AppRouter> {
     }
     if (!_onboardingComplete!) {
       return OnboardingFlow(
-        onComplete: () => setState(() => _onboardingComplete = true),
+        onComplete: () async {
+          // Reload role after onboarding so we route to the correct shell.
+          final role = await UserProfileService().getRole();
+          if (mounted) {
+            setState(() {
+              _onboardingComplete = true;
+              _userRole = role;
+            });
+          }
+        },
       );
     }
-    return const _AuthGateWrapper();
+    return _shellForRole(_userRole);
   }
 }
 
@@ -177,7 +220,8 @@ class _AppRouterState extends State<_AppRouter> {
 // time the app returns from background. Shows _LockScreen when session is
 // expired and prompts for biometric / device credential.
 class _AuthGateWrapper extends StatefulWidget {
-  const _AuthGateWrapper();
+  final Widget shell;
+  const _AuthGateWrapper({required this.shell});
 
   @override
   State<_AuthGateWrapper> createState() => _AuthGateWrapperState();
@@ -261,7 +305,7 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        const _AppShell(),
+        widget.shell,
         if (_isLocked)
           _LockScreen(
             onUnlock: _promptAuth,
@@ -554,12 +598,17 @@ class _ProfileTab extends StatelessWidget {
                           letterSpacing: -0.5,
                         ),
                       ),
-                      const Text(
-                        'VitalPath Patient',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: VitalPathTheme.softGrey,
-                          fontWeight: FontWeight.w500,
+                      FutureBuilder<UserProfileModel?>(
+                        future: UserProfileService().getProfile(),
+                        builder: (_, snap) => Text(
+                          (snap.data?.displayName.isNotEmpty == true)
+                              ? snap.data!.displayName
+                              : 'VitalPath Patient',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: VitalPathTheme.softGrey,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ),
                     ],
