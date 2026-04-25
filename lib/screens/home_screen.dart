@@ -42,6 +42,8 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import 'package:vitalpath/providers/dashboard_provider.dart';
+import 'package:vitalpath/screens/notification_settings_screen.dart';
+import 'package:vitalpath/theme/vitalpath_theme.dart';
 import 'package:vitalpath/services/health_service.dart';
 import 'package:vitalpath/widgets/bundle_card_widget.dart';
 import 'package:vitalpath/widgets/smart_timeline_widget.dart';
@@ -50,8 +52,9 @@ import 'package:vitalpath/widgets/step_goal_widget.dart';
 class HomeScreen extends StatefulWidget {
   /// Pass a mock stream for dev builds; real stream in production.
   final Stream<int>? stepsStreamOverride;
+  final VoidCallback? onNavigateToCare;
 
-  const HomeScreen({super.key, this.stepsStreamOverride});
+  const HomeScreen({super.key, this.stepsStreamOverride, this.onNavigateToCare});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -88,7 +91,7 @@ class _HomeScreenState extends State<HomeScreen>
     final now = DateTime.now();
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7FB),
+      backgroundColor: VitalPathTheme.lightSurface,
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(
             parent: AlwaysScrollableScrollPhysics()),
@@ -119,17 +122,17 @@ class _HomeScreenState extends State<HomeScreen>
                               _greeting(now),
                               style: const TextStyle(
                                 fontSize: 13,
-                                color: Color(0xFF9E9E9E),
+                                color: VitalPathTheme.softGrey,
                                 fontWeight: FontWeight.w500,
                               ),
                             ),
                             const SizedBox(height: 2),
                             const Text(
-                              'Your Passbook',
+                              'Today',
                               style: TextStyle(
                                 fontSize: 24,
                                 fontWeight: FontWeight.w800,
-                                color: Color(0xFF1A1A2E),
+                                color: VitalPathTheme.deepCharcoal,
                                 letterSpacing: -0.5,
                               ),
                             ),
@@ -168,19 +171,22 @@ class _HomeScreenState extends State<HomeScreen>
             ),
             // Collapsed title
             title: const Text(
-              'Passbook',
+              'Today',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFF1A1A2E),
+                color: VitalPathTheme.deepCharcoal,
               ),
             ),
             centerTitle: false,
             actions: [
               IconButton(
                 icon: const Icon(Icons.notifications_outlined,
-                    color: Color(0xFF1A1A2E), size: 22),
-                onPressed: () => HapticFeedback.lightImpact(),
+                    color: VitalPathTheme.deepCharcoal, size: 22),
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  Navigator.of(context).push(_slideRoute());
+                },
                 tooltip: 'Notifications',
               ),
             ],
@@ -200,15 +206,18 @@ class _HomeScreenState extends State<HomeScreen>
           // ── Bundle Card (appears when 2+ doses are due now) ───────────────
           const SliverToBoxAdapter(child: BundleCard()),
 
-          // ── Summary strip ────────────────────────────────────────────────
+          // ── Summary strip (hidden when no tasks exist) ───────────────────
           SliverToBoxAdapter(
             child: Consumer<DashboardProvider>(
-              builder: (_, provider, __) => _SummaryStrip(
-                completed: provider.completedTodayCount,
-                total: provider.totalTodayCount,
-                upcoming: provider.upcomingCount,
-                ratio: provider.todayCompletionRatio,
-              ),
+              builder: (_, provider, __) {
+                if (provider.totalTodayCount == 0) return const SizedBox.shrink();
+                return _SummaryStrip(
+                  completed: provider.completedTodayCount,
+                  total: provider.totalTodayCount,
+                  upcoming: provider.upcomingCount,
+                  ratio: provider.todayCompletionRatio,
+                );
+              },
             ),
           ),
 
@@ -219,12 +228,34 @@ class _HomeScreenState extends State<HomeScreen>
           ),
 
           // ── Smart Timeline (lazy SliverList) ─────────────────────────────
-          const SmartTimelineSliverList(),
+          SmartTimelineSliverList(onNavigateToCare: widget.onNavigateToCare),
 
           // ── Bottom padding ───────────────────────────────────────────────
           const SliverToBoxAdapter(child: SizedBox(height: 32)),
         ],
       ),
+    );
+  }
+
+  static Route<void> _slideRoute() {
+    return PageRouteBuilder<void>(
+      pageBuilder: (_, __, ___) => const NotificationSettingsScreen(),
+      transitionDuration: const Duration(milliseconds: 280),
+      reverseTransitionDuration: const Duration(milliseconds: 240),
+      transitionsBuilder: (_, anim, __, child) {
+        final curved = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1.0, 0),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        );
+      },
     );
   }
 
@@ -343,6 +374,7 @@ class _ProgressPill extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey.shade200),
+        boxShadow: VitalPathTheme.tealGlowShadow(intensity: 0.15),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -396,7 +428,7 @@ class _TimelineHeaderDelegate extends SliverPersistentHeaderDelegate {
   Widget build(
       BuildContext context, double shrinkOffset, bool overlapsContent) {
     return Container(
-      color: const Color(0xFFF6F7FB),
+      color: VitalPathTheme.lightSurface,
       child: Column(
         children: [
           if (overlapsContent)
@@ -407,11 +439,11 @@ class _TimelineHeaderDelegate extends SliverPersistentHeaderDelegate {
               child: Row(
                 children: [
                   const Text(
-                    "Today's Passbook",
+                    "Today's Timeline",
                     style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w800,
-                      color: Color(0xFF1A1A2E),
+                      color: VitalPathTheme.deepCharcoal,
                     ),
                   ),
                   const Spacer(),

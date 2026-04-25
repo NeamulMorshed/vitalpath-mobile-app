@@ -59,6 +59,20 @@ class PrescriptionProvider extends ChangeNotifier {
   List<PrescriptionModel> get allPrescriptions =>
       List.unmodifiable(_prescriptions);
 
+  /// Active prescriptions — today falls within [startDate..endDate] inclusive.
+  /// Compared date-only (midnight) so a prescription starting or ending today
+  /// is included for the full day.
+  /// Used by the Medicines tab; the Vault tab uses [groupedPrescriptions] (all records).
+  List<PrescriptionModel> get activePrescriptions {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    return _prescriptions.where((p) {
+      final start = DateTime(p.startDate.year, p.startDate.month, p.startDate.day);
+      final end   = DateTime(p.endDate.year,   p.endDate.month,   p.endDate.day);
+      return !today.isBefore(start) && !today.isAfter(end);
+    }).toList();
+  }
+
   // ── Latest-First Algorithm ───────────────────────────────────────────────────
   /// Returns prescriptions grouped by [doctorName].
   ///

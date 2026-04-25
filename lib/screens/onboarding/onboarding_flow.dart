@@ -37,6 +37,11 @@ class OnboardingFlow extends StatefulWidget {
     await prefs.setBool(_prefKey, true);
   }
 
+  static Future<void> reset() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefKey);
+  }
+
   @override
   State<OnboardingFlow> createState() => _OnboardingFlowState();
 }

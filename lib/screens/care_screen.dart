@@ -24,6 +24,8 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'package:vitalpath/providers/prescription_provider.dart';
+import 'package:vitalpath/screens/notification_settings_screen.dart';
+import 'package:vitalpath/theme/vitalpath_theme.dart';
 import 'package:vitalpath/models/prescription_model.dart';
 import 'package:vitalpath/widgets/prescription_card_widget.dart';
 import 'package:vitalpath/widgets/add_prescription_bottom_sheet.dart';
@@ -42,12 +44,12 @@ class _CareScreenState extends State<CareScreen>
   // Track the current tab to conditionally show/hide the FAB.
   int _activeTab = 0;
 
-  static const _tabs = ['Medicines', 'Food', 'Activity'];
+  static const _tabs = ['Medicines', 'Vault', 'Nutrition'];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: _tabs.length, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       if (_tabController.indexIsChanging) return;
       setState(() => _activeTab = _tabController.index);
@@ -63,8 +65,8 @@ class _CareScreenState extends State<CareScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7FB),
-      appBar: _buildAppBar(),
+      backgroundColor: VitalPathTheme.lightSurface,
+      appBar: _buildAppBar(context),
       body: TabBarView(
         controller: _tabController,
         // Disable swipe on small velocity to prevent accidental tab switches
@@ -72,8 +74,8 @@ class _CareScreenState extends State<CareScreen>
         physics: const ClampingScrollPhysics(),
         children: const [
           _MedicinesTab(),
-          _FoodTab(),
-          _ActivityTab(),
+          _VaultTab(),
+          _NutritionTab(),
         ],
       ),
       // FAB is only shown on the Medicines tab (index 0).
@@ -83,17 +85,20 @@ class _CareScreenState extends State<CareScreen>
           scale: anim,
           child: child,
         ),
-        child: _activeTab == 0
-            ? _AddMedicineFab(
+        child: _activeTab == 2
+            ? _LogNutritionFab(
+                key: const ValueKey('nutrition-fab'),
+                onPressed: () => _showNutritionComingSoon(context),
+              )
+            : _AddMedicineFab(
                 key: const ValueKey('medicines-fab'),
                 onPressed: () => _openAddSheet(context),
-              )
-            : const SizedBox.shrink(key: ValueKey('no-fab')),
+              ),
       ),
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar(BuildContext context) {
     return AppBar(
       backgroundColor: Colors.white,
       elevation: 0,
@@ -103,21 +108,23 @@ class _CareScreenState extends State<CareScreen>
         style: TextStyle(
           fontSize: 22,
           fontWeight: FontWeight.w800,
-          color: Color(0xFF1A1A2E),
+          color: VitalPathTheme.deepCharcoal,
         ),
       ),
       actions: [
-        // Notification bell — wired in Phase 2.
         IconButton(
           icon: const Icon(Icons.notifications_none_rounded,
-              color: Color(0xFF555566)),
-          onPressed: () => HapticFeedback.lightImpact(),
+              color: VitalPathTheme.softGrey),
+          onPressed: () {
+            HapticFeedback.lightImpact();
+            Navigator.of(context).push(_slideRoute());
+          },
         ),
       ],
       bottom: TabBar(
         controller: _tabController,
         labelColor: const Color(0xFF00897B),
-        unselectedLabelColor: const Color(0xFF9E9E9E),
+        unselectedLabelColor: VitalPathTheme.softGrey,
         indicatorColor: const Color(0xFF00897B),
         indicatorWeight: 2.5,
         labelStyle: const TextStyle(
@@ -129,6 +136,41 @@ class _CareScreenState extends State<CareScreen>
           fontSize: 14,
         ),
         tabs: _tabs.map((t) => Tab(text: t)).toList(),
+      ),
+    );
+  }
+
+  static Route<void> _slideRoute() {
+    return PageRouteBuilder<void>(
+      pageBuilder: (_, __, ___) => const NotificationSettingsScreen(),
+      transitionDuration: const Duration(milliseconds: 280),
+      reverseTransitionDuration: const Duration(milliseconds: 240),
+      transitionsBuilder: (_, anim, __, child) {
+        final curved = CurvedAnimation(
+          parent: anim,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1.0, 0),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        );
+      },
+    );
+  }
+
+  void _showNutritionComingSoon(BuildContext context) {
+    HapticFeedback.lightImpact();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Nutrition logging is coming soon — stay tuned!'),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: const Color(0xFF3D5AFE),
+        duration: const Duration(seconds: 3),
       ),
     );
   }
@@ -163,14 +205,16 @@ class _MedicinesTabState extends State<_MedicinesTab>
     super.build(context); // required by AutomaticKeepAliveClientMixin
     return Consumer<PrescriptionProvider>(
       builder: (context, provider, _) {
-        final prescriptions = provider.allPrescriptions;
+        final prescriptions = provider.activePrescriptions;
 
-        if (provider.isLoading && prescriptions.isEmpty) {
+        if (provider.isLoading && provider.totalCount == 0) {
           return const _TabLoadingShimmer();
         }
 
         if (prescriptions.isEmpty) {
-          return const _EmptyMedicinesState();
+          return _EmptyActiveMedicinesState(
+            hasHistorical: provider.totalCount > 0,
+          );
         }
 
         return ListView.builder(
@@ -203,16 +247,16 @@ class _MedicinesTabState extends State<_MedicinesTab>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FOOD TAB
+// VAULT TAB — prescriptions grouped by doctor, with sticky section headers
 // ─────────────────────────────────────────────────────────────────────────────
-class _FoodTab extends StatefulWidget {
-  const _FoodTab();
+class _VaultTab extends StatefulWidget {
+  const _VaultTab();
 
   @override
-  State<_FoodTab> createState() => _FoodTabState();
+  State<_VaultTab> createState() => _VaultTabState();
 }
 
-class _FoodTabState extends State<_FoodTab>
+class _VaultTabState extends State<_VaultTab>
     with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
@@ -220,34 +264,157 @@ class _FoodTabState extends State<_FoodTab>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    // Food entries will be powered by a NutritionProvider in the next sprint.
-    // Placeholder with governance-aware card structure shown below.
-    return ListView(
-      padding: const EdgeInsets.only(top: 12, bottom: 100),
-      physics: const BouncingScrollPhysics(),
-      children: const [
-        _ComingSoonBanner(
-          icon: Icons.restaurant_menu_rounded,
-          title: 'Food Log',
-          description:
-              'Log meals, track macros, and receive doctor-prescribed dietary protocols.',
+    return Consumer<PrescriptionProvider>(
+      builder: (context, provider, _) {
+        if (provider.isLoading && provider.totalCount == 0) {
+          return const _TabLoadingShimmer();
+        }
+        if (provider.totalCount == 0) {
+          return const _EmptyMedicinesState();
+        }
+        return CustomScrollView(
+          physics: const BouncingScrollPhysics(),
+          slivers: [
+            ..._buildGroupedSlivers(context, provider),
+            const SliverToBoxAdapter(child: SizedBox(height: 100)),
+          ],
+        );
+      },
+    );
+  }
+
+  List<Widget> _buildGroupedSlivers(
+      BuildContext context, PrescriptionProvider provider) {
+    final grouped = provider.groupedPrescriptions;
+    final slivers = <Widget>[];
+    for (final entry in grouped.entries) {
+      slivers.add(SliverPersistentHeader(
+        pinned: true,
+        delegate: _VaultDoctorHeaderDelegate(
+          doctorName: entry.key,
+          count: entry.value.length,
         ),
-      ],
+      ));
+      slivers.add(SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) {
+            final p = entry.value[index];
+            return PrescriptionCardWidget(
+              key: ValueKey(p.id ?? p.medicineName),
+              prescription: p,
+              onEdit: (p) => _openEditSheet(context, p),
+              onDelete: (id) =>
+                  context.read<PrescriptionProvider>().deletePrescription(id),
+            );
+          },
+          childCount: entry.value.length,
+        ),
+      ));
+      slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 8)));
+    }
+    return slivers;
+  }
+
+  void _openEditSheet(BuildContext context, PrescriptionModel prescription) {
+    AddPrescriptionBottomSheet.show(
+      context,
+      initialPrescription: prescription,
+      onSaved: (p) =>
+          context.read<PrescriptionProvider>().updatePrescription(p),
+    );
+  }
+}
+
+// Sticky doctor-group section header for the Vault tab.
+class _VaultDoctorHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final String doctorName;
+  final int count;
+
+  static const double _h = 44.0;
+
+  const _VaultDoctorHeaderDelegate({
+    required this.doctorName,
+    required this.count,
+  });
+
+  @override
+  double get minExtent => _h;
+  @override
+  double get maxExtent => _h;
+
+  @override
+  bool shouldRebuild(_VaultDoctorHeaderDelegate old) =>
+      old.doctorName != doctorName || old.count != count;
+
+  @override
+  Widget build(
+      BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return Material(
+      elevation: overlapsContent ? 2 : 0,
+      shadowColor: Colors.black12,
+      color: VitalPathTheme.lightSurface,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE6F7F4),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.medical_services_outlined,
+                  size: 15, color: Color(0xFF00897B)),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Dr. $doctorName',
+                style: const TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: VitalPathTheme.deepCharcoal,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFF00897B).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                '$count',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF00897B),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ACTIVITY TAB
+// NUTRITION TAB
 // ─────────────────────────────────────────────────────────────────────────────
-class _ActivityTab extends StatefulWidget {
-  const _ActivityTab();
+class _NutritionTab extends StatefulWidget {
+  const _NutritionTab();
 
   @override
-  State<_ActivityTab> createState() => _ActivityTabState();
+  State<_NutritionTab> createState() => _NutritionTabState();
 }
 
-class _ActivityTabState extends State<_ActivityTab>
+class _NutritionTabState extends State<_NutritionTab>
     with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
@@ -255,24 +422,39 @@ class _ActivityTabState extends State<_ActivityTab>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return ListView(
-      padding: const EdgeInsets.only(top: 12, bottom: 100),
-      physics: const BouncingScrollPhysics(),
-      children: const [
-        _ComingSoonBanner(
-          icon: Icons.directions_run_rounded,
-          title: 'Activity Log',
-          description:
-              'Track workouts, physiotherapy sessions, and doctor-prescribed exercise protocols.',
-        ),
-      ],
-    );
+    return const _NutritionEmptyState();
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED WIDGETS
 // ─────────────────────────────────────────────────────────────────────────────
+
+class _LogNutritionFab extends StatelessWidget {
+  final VoidCallback onPressed;
+
+  const _LogNutritionFab({super.key, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return FloatingActionButton.extended(
+      onPressed: onPressed,
+      backgroundColor: const Color(0xFF3D5AFE),
+      extendedPadding: const EdgeInsets.symmetric(horizontal: 20),
+      icon: const Icon(Icons.restaurant_menu_rounded, size: 20, color: Colors.white),
+      label: const Text(
+        'Log Nutrition',
+        style: TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
+          fontSize: 15,
+        ),
+      ),
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    );
+  }
+}
 
 class _AddMedicineFab extends StatelessWidget {
   final VoidCallback onPressed;
@@ -330,7 +512,7 @@ class _EmptyMedicinesState extends StatelessWidget {
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
-                color: Color(0xFF1A1A2E),
+                color: VitalPathTheme.deepCharcoal,
               ),
             ),
             const SizedBox(height: 8),
@@ -340,8 +522,145 @@ class _EmptyMedicinesState extends StatelessWidget {
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
-                color: Color(0xFF9E9E9E),
+                color: VitalPathTheme.softGrey,
                 height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyActiveMedicinesState extends StatelessWidget {
+  final bool hasHistorical;
+
+  const _EmptyActiveMedicinesState({required this.hasHistorical});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE6F7F4),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Icon(
+                Icons.medication_outlined,
+                size: 36,
+                color: Color(0xFF00897B),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              hasHistorical ? 'No Active Medicines' : 'No Medicines Yet',
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: VitalPathTheme.deepCharcoal,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              hasHistorical
+                  ? 'All your prescriptions have expired or haven\'t started yet. '
+                    'Check the Vault tab to see your full history.'
+                  : 'Tap "+ Add Medicine" to log your first prescription, '
+                    'or ask your doctor to sync their prescriptions directly.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 14,
+                color: VitalPathTheme.softGrey,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NutritionEmptyState extends StatelessWidget {
+  const _NutritionEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0F4FF),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Icon(
+                Icons.restaurant_menu_rounded,
+                size: 36,
+                color: Color(0xFF3D5AFE),
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              'Nutrition Log',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: VitalPathTheme.deepCharcoal,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Log meals, track macros, and receive doctor-prescribed dietary protocols.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14,
+                color: VitalPathTheme.softGrey,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: const Text(
+                        'Nutrition logging is coming soon — stay tuned!'),
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    backgroundColor: const Color(0xFF3D5AFE),
+                    duration: const Duration(seconds: 3),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.add_rounded, size: 20),
+              label: const Text('Add Entry'),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF3D5AFE),
+                foregroundColor: Colors.white,
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 15,
+                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
               ),
             ),
           ],
@@ -374,75 +693,3 @@ class _TabLoadingShimmer extends StatelessWidget {
   }
 }
 
-class _ComingSoonBanner extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String description;
-
-  const _ComingSoonBanner({
-    required this.icon,
-    required this.title,
-    required this.description,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 24, 16, 0),
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.grey[200]!),
-      ),
-      child: Column(
-        children: [
-          Container(
-            width: 60,
-            height: 60,
-            decoration: BoxDecoration(
-              color: const Color(0xFFF0F4FF),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Icon(icon, size: 30, color: const Color(0xFF3D5AFE)),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFF1A1A2E),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            description,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 13.5,
-              color: Color(0xFF9E9E9E),
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF0F4FF),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Text(
-              'Coming in Phase 2',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF3D5AFE),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}

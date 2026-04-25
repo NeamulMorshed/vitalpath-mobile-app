@@ -7,6 +7,8 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
 import 'package:vitalpath/firebase_options.dart';
+import 'package:vitalpath/models/prescription_model.dart';
+import 'package:vitalpath/theme/vitalpath_theme.dart';
 import 'package:vitalpath/providers/activity_provider.dart';
 import 'package:vitalpath/providers/appointment_provider.dart';
 import 'package:vitalpath/providers/dashboard_provider.dart';
@@ -14,13 +16,18 @@ import 'package:vitalpath/providers/prescription_provider.dart';
 import 'package:vitalpath/screens/activity_screen.dart';
 import 'package:vitalpath/screens/care_screen.dart';
 import 'package:vitalpath/screens/home_screen.dart';
+import 'package:vitalpath/screens/doctor_portal_screen.dart';
 import 'package:vitalpath/screens/my_doctors_screen.dart';
 import 'package:vitalpath/screens/notification_settings_screen.dart';
 import 'package:vitalpath/screens/onboarding/onboarding_flow.dart';
-import 'package:vitalpath/screens/prescription_vault_screen.dart';
 import 'package:vitalpath/screens/privacy_settings_screen.dart';
 import 'package:vitalpath/services/auth_gate_service.dart';
 import 'package:vitalpath/services/sync_queue_service.dart';
+
+// Incrementing this notifier causes VitalpathApp to rebuild from scratch —
+// fresh providers and a new _AppRouter that re-reads SharedPreferences.
+// Used by the Developer tile to replay the full onboarding flow.
+final _restartNotifier = ValueNotifier<int>(0);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,7 +55,9 @@ class VitalpathApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
+    return ValueListenableBuilder<int>(
+      valueListenable: _restartNotifier,
+      builder: (_, __, ___) => MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => PrescriptionProvider()),
         ChangeNotifierProvider(create: (_) => AppointmentProvider()),
@@ -70,14 +79,22 @@ class VitalpathApp extends StatelessWidget {
         theme: _buildTheme(),
         home: const _AppRouter(),
       ),
-    );
+    ),
+  );
+  }
+
+  // Clears the onboarding flag and triggers a full app rebuild so _AppRouter
+  // re-reads SharedPreferences and shows the splash + onboarding from scratch.
+  static Future<void> restartFromSplash() async {
+    await OnboardingFlow.reset();
+    _restartNotifier.value++;
   }
 
   ThemeData _buildTheme() {
     return ThemeData(
       useMaterial3: true,
       colorSchemeSeed: const Color(0xFF00897B),
-      scaffoldBackgroundColor: const Color(0xFFF6F7FB),
+      scaffoldBackgroundColor: VitalPathTheme.lightSurface,
       navigationBarTheme: const NavigationBarThemeData(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -87,9 +104,9 @@ class VitalpathApp extends StatelessWidget {
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        iconTheme: IconThemeData(color: Color(0xFF1A1A2E)),
+        iconTheme: IconThemeData(color: VitalPathTheme.deepCharcoal),
         titleTextStyle: TextStyle(
-          color: Color(0xFF1A1A2E),
+          color: VitalPathTheme.deepCharcoal,
           fontSize: 18,
           fontWeight: FontWeight.w700,
         ),
@@ -157,6 +174,11 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
   bool _isLocked = false;
   bool _isPrompting = false;
   int _failedAttempts = 0;
+  DateTime? _backgroundedAt;
+
+  // Only re-challenge auth if the user was away for longer than this threshold.
+  // Prevents locking the app during quick notification / multitasking switches.
+  static const _resumeGracePeriod = Duration(minutes: 2);
 
   @override
   void initState() {
@@ -173,7 +195,18 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _checkSession();
+    if (state == AppLifecycleState.paused) {
+      _backgroundedAt = DateTime.now();
+    } else if (state == AppLifecycleState.resumed) {
+      final gone = _backgroundedAt != null
+          ? DateTime.now().difference(_backgroundedAt!)
+          : null;
+      _backgroundedAt = null;
+      // Skip the re-challenge if the user was gone for less than the grace period.
+      if (gone == null || gone > _resumeGracePeriod) {
+        _checkSession();
+      }
+    }
   }
 
   Future<void> _checkSession() async {
@@ -199,6 +232,17 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
     }
   }
 
+  void _showEmergencyInfo(BuildContext context) {
+    final prescriptions =
+        context.read<PrescriptionProvider>().allPrescriptions;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _EmergencyInfoSheet(prescriptions: prescriptions),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Stack(
@@ -208,6 +252,7 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
           _LockScreen(
             onUnlock: _promptAuth,
             failedAttempts: _failedAttempts,
+            onEmergencyInfo: () => _showEmergencyInfo(context),
           ),
       ],
     );
@@ -219,8 +264,13 @@ class _AuthGateWrapperState extends State<_AuthGateWrapper>
 class _LockScreen extends StatelessWidget {
   final VoidCallback onUnlock;
   final int failedAttempts;
+  final VoidCallback? onEmergencyInfo;
 
-  const _LockScreen({required this.onUnlock, this.failedAttempts = 0});
+  const _LockScreen({
+    required this.onUnlock,
+    this.failedAttempts = 0,
+    this.onEmergencyInfo,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -233,7 +283,7 @@ class _LockScreen extends StatelessWidget {
         BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
           child: Container(
-            color: const Color(0xFF1A1A2E).withOpacity(0.72),
+            color: VitalPathTheme.deepCharcoal.withOpacity(0.72),
           ),
         ),
         // Glass card + unlock controls
@@ -301,18 +351,38 @@ class _LockScreen extends StatelessWidget {
                             height: 1.4,
                           ),
                         ),
-                        if (failedAttempts > 0 && !showFallback) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            '${3 - failedAttempts} attempt${3 - failedAttempts == 1 ? '' : 's'} remaining',
-                            style: const TextStyle(
-                              color: Color(0xFFEF9A9A),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
+                        // Dot-style attempt indicator
+                        if (failedAttempts > 0) ...[
+                          const SizedBox(height: 12),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: List.generate(3, (i) {
+                              return Container(
+                                margin: const EdgeInsets.symmetric(
+                                    horizontal: 4),
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: i < failedAttempts
+                                      ? const Color(0xFFEF9A9A)
+                                      : Colors.white.withOpacity(0.25),
+                                ),
+                              );
+                            }),
                           ),
+                          if (!showFallback) ...[
+                            const SizedBox(height: 5),
+                            Text(
+                              '${3 - failedAttempts} attempt${3 - failedAttempts == 1 ? '' : 's'} remaining',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.55),
+                                fontSize: 11.5,
+                              ),
+                            ),
+                          ],
                         ],
-                        const SizedBox(height: 28),
+                        const SizedBox(height: 24),
                         // Primary action
                         SizedBox(
                           width: double.infinity,
@@ -338,6 +408,28 @@ class _LockScreen extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(14),
                               ),
                             ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        // Emergency info — always accessible, no auth required
+                        TextButton.icon(
+                          onPressed: onEmergencyInfo,
+                          icon: const Icon(
+                            Icons.emergency_share_rounded,
+                            size: 15,
+                            color: Color(0xFFEF9A9A),
+                          ),
+                          label: const Text(
+                            'View Emergency Info',
+                            style: TextStyle(
+                              color: Color(0xFFEF9A9A),
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
                           ),
                         ),
                       ],
@@ -373,7 +465,7 @@ class _AppShellState extends State<_AppShell> {
       body: IndexedStack(
         index: _tab,
         children: [
-          const HomeScreen(),
+          HomeScreen(onNavigateToCare: () => setState(() => _tab = 1)),
           const CareScreen(),
           // ActivityProvider is scoped to the Activity tab only.
           ChangeNotifierProvider(
@@ -422,7 +514,7 @@ class _ProfileTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F7FB),
+      backgroundColor: VitalPathTheme.lightSurface,
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(
             parent: AlwaysScrollableScrollPhysics()),
@@ -444,15 +536,15 @@ class _ProfileTab extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.w800,
-                          color: Color(0xFF1A1A2E),
+                          color: VitalPathTheme.deepCharcoal,
                           letterSpacing: -0.5,
                         ),
                       ),
-                      Text(
-                        patientId,
-                        style: const TextStyle(
+                      const Text(
+                        'VitalPath Patient',
+                        style: TextStyle(
                           fontSize: 13,
-                          color: Color(0xFF9E9E9E),
+                          color: VitalPathTheme.softGrey,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -468,21 +560,13 @@ class _ProfileTab extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const _SectionHeader('Clinical'),
+                  const _SectionHeader('My Health'),
                   _ProfileTile(
                     icon: Icons.people_alt_outlined,
                     label: 'My Doctors',
                     subtitle: 'Sync and manage your care team',
                     onTap: () => Navigator.of(context)
                         .push(MyDoctorsScreen.route(patientId)),
-                  ),
-                  _ProfileTile(
-                    icon: Icons.medication_outlined,
-                    label: 'Prescription Vault',
-                    subtitle: 'All prescriptions grouped by doctor',
-                    onTap: () => Navigator.of(context).push(
-                      _slideRoute(const PrescriptionVaultScreen()),
-                    ),
                   ),
                   const SizedBox(height: 16),
                   const _SectionHeader('Settings'),
@@ -500,6 +584,27 @@ class _ProfileTab extends StatelessWidget {
                     subtitle: 'Biometric lock, encryption, data access',
                     onTap: () => Navigator.of(context).push(
                       PrivacySettingsScreen.route(patientId),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const _SectionHeader('Developer'),
+                  _ProfileTile(
+                    icon: Icons.replay_rounded,
+                    label: 'Restart from Splash',
+                    subtitle: 'Replay onboarding → login → profile creation',
+                    iconColor: const Color(0xFFE65100),
+                    onTap: () async {
+                      HapticFeedback.mediumImpact();
+                      await VitalpathApp.restartFromSplash();
+                    },
+                  ),
+                  _ProfileTile(
+                    icon: Icons.local_hospital_rounded,
+                    label: 'Switch to Doctor View',
+                    subtitle: 'Test the v3.0.0 doctor portal (preview)',
+                    iconColor: const Color(0xFF3D5AFE),
+                    onTap: () => Navigator.of(context).push(
+                      DoctorPortalScreen.route(),
                     ),
                   ),
                 ],
@@ -537,6 +642,133 @@ class _ProfileTab extends StatelessWidget {
 
 }
 
+// ── Emergency Info Sheet (no auth required) ───────────────────────────────────
+// Shows a read-only list of the patient's current medications.
+// Accessible from the lock screen for first-responder / emergency scenarios.
+class _EmergencyInfoSheet extends StatelessWidget {
+  final List<PrescriptionModel> prescriptions;
+
+  const _EmergencyInfoSheet({required this.prescriptions});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 60),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar
+            Center(
+              child: Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 4),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            // Header
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 12, 20, 2),
+              child: Row(
+                children: [
+                  Icon(Icons.emergency_rounded,
+                      color: Color(0xFFE53935), size: 22),
+                  SizedBox(width: 10),
+                  Text(
+                    'Emergency Medical Info',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: VitalPathTheme.deepCharcoal,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                'Read-only · No authentication required',
+                style: TextStyle(fontSize: 12, color: VitalPathTheme.softGrey),
+              ),
+            ),
+            const Divider(height: 1),
+            if (prescriptions.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(28),
+                child: Center(
+                  child: Text(
+                    'No medications on record.',
+                    style:
+                        TextStyle(color: VitalPathTheme.softGrey, fontSize: 14),
+                  ),
+                ),
+              )
+            else
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.5,
+                ),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: prescriptions.length,
+                  separatorBuilder: (_, __) => const Divider(
+                      indent: 20, endIndent: 20, height: 1),
+                  itemBuilder: (_, i) {
+                    final p = prescriptions[i];
+                    final dosageStr = p.dosage == p.dosage.roundToDouble()
+                        ? p.dosage.toInt().toString()
+                        : p.dosage.toString();
+                    return ListTile(
+                      leading: Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE6F7F4),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.medication_rounded,
+                            size: 18, color: Color(0xFF00897B)),
+                      ),
+                      title: Text(
+                        p.medicineName,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                            color: VitalPathTheme.deepCharcoal),
+                      ),
+                      subtitle: Text(
+                        '$dosageStr ${p.unit.label}'
+                        '${p.doctorName.isNotEmpty ? ' · Dr. ${p.doctorName}' : ''}',
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFF888899)),
+                      ),
+                      trailing: p.isVerified
+                          ? const Icon(Icons.verified_rounded,
+                              size: 16, color: Color(0xFF00897B))
+                          : null,
+                    );
+                  },
+                ),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SectionHeader extends StatelessWidget {
   final String title;
   const _SectionHeader(this.title);
@@ -547,11 +779,8 @@ class _SectionHeader extends StatelessWidget {
       padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
       child: Text(
         title.toUpperCase(),
-        style: const TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: Color(0xFF9E9E9E),
-          letterSpacing: 1.0,
+        style: VitalPathTheme.labelLarge.copyWith(
+          color: VitalPathTheme.softGrey,
         ),
       ),
     );
@@ -563,12 +792,14 @@ class _ProfileTile extends StatelessWidget {
   final String label;
   final String subtitle;
   final VoidCallback onTap;
+  final Color? iconColor;
 
   const _ProfileTile({
     required this.icon,
     required this.label,
     required this.subtitle,
     required this.onTap,
+    this.iconColor,
   });
 
   @override
@@ -579,13 +810,7 @@ class _ProfileTile extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF000000).withOpacity(0.04),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
+          boxShadow: VitalPathTheme.cardShadow,
         ),
         child: Material(
           color: Colors.transparent,
@@ -601,11 +826,13 @@ class _ProfileTile extends StatelessWidget {
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFE0F2F1),
+                      color: iconColor != null
+                          ? iconColor!.withValues(alpha: 0.1)
+                          : const Color(0xFFE0F2F1),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Icon(icon,
-                        size: 20, color: const Color(0xFF00897B)),
+                        size: 20, color: iconColor ?? const Color(0xFF00897B)),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -616,13 +843,13 @@ class _ProfileTile extends StatelessWidget {
                             style: const TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
-                              color: Color(0xFF1A1A2E),
+                              color: VitalPathTheme.deepCharcoal,
                             )),
                         const SizedBox(height: 2),
                         Text(subtitle,
                             style: const TextStyle(
                               fontSize: 12,
-                              color: Color(0xFF9E9E9E),
+                              color: VitalPathTheme.softGrey,
                               fontWeight: FontWeight.w400,
                             )),
                       ],

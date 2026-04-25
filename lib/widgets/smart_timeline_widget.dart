@@ -33,6 +33,8 @@ import 'package:provider/provider.dart';
 
 import 'package:vitalpath/models/timeline_entry.dart';
 import 'package:vitalpath/providers/dashboard_provider.dart';
+import 'package:vitalpath/providers/prescription_provider.dart';
+import 'package:vitalpath/providers/prescription_provider.dart';
 import 'package:vitalpath/services/haptic_service.dart';
 import 'package:vitalpath/services/medicine_logging_service.dart';
 import 'package:vitalpath/widgets/duplicate_log_modal.dart';
@@ -41,7 +43,9 @@ import 'package:vitalpath/widgets/success_toast.dart';
 // ── Public SliverList widget ──────────────────────────────────────────────────
 /// Returns a [SliverList] ready to drop into a [CustomScrollView].
 class SmartTimelineSliverList extends StatelessWidget {
-  const SmartTimelineSliverList({super.key});
+  final VoidCallback? onNavigateToCare;
+
+  const SmartTimelineSliverList({super.key, this.onNavigateToCare});
 
   @override
   Widget build(BuildContext context) {
@@ -50,7 +54,14 @@ class SmartTimelineSliverList extends StatelessWidget {
         final entries = provider.todayEntries;
 
         if (entries.isEmpty) {
-          return const SliverToBoxAdapter(child: _EmptyTimelineState());
+          return SliverToBoxAdapter(
+            child: Consumer<PrescriptionProvider>(
+              builder: (_, prescriptions, __) =>
+                  prescriptions.allPrescriptions.isEmpty
+                      ? _NudgeEmptyState(onNavigateToCare: onNavigateToCare)
+                      : const _AllClearEmptyState(),
+            ),
+          );
         }
 
         return SliverList(
@@ -402,7 +413,7 @@ class _CardBody extends StatelessWidget {
               SizedBox(width: 5),
               Expanded(
                 child: Text(
-                  'Confirmed appointment — synced to your passbook',
+                  'Confirmed appointment — synced to your schedule',
                   style: TextStyle(fontSize: 11.5, color: Color(0xFF00695C)),
                 ),
               ),
@@ -572,14 +583,16 @@ class _QuickLogButtonState extends State<_QuickLogButton> {
   }
 }
 
-// ── Empty state ───────────────────────────────────────────────────────────────
-class _EmptyTimelineState extends StatelessWidget {
-  const _EmptyTimelineState();
+// ── Empty state: no prescriptions added yet ───────────────────────────────────
+class _NudgeEmptyState extends StatelessWidget {
+  final VoidCallback? onNavigateToCare;
+
+  const _NudgeEmptyState({this.onNavigateToCare});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 24, 32, 32),
+      padding: const EdgeInsets.fromLTRB(32, 32, 32, 32),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -590,12 +603,12 @@ class _EmptyTimelineState extends StatelessWidget {
               color: const Color(0xFFE6F7F4),
               borderRadius: BorderRadius.circular(18),
             ),
-            child: const Icon(Icons.event_available_rounded,
+            child: const Icon(Icons.medication_outlined,
                 size: 32, color: Color(0xFF00897B)),
           ),
           const SizedBox(height: 16),
           const Text(
-            'All clear for today!',
+            'Start your health journey',
             style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
@@ -603,7 +616,56 @@ class _EmptyTimelineState extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           const Text(
-            'No medicines, meals, or appointments\nscheduled yet for today.',
+            'Add your first medicine to see your\ndaily schedule here.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                fontSize: 13.5, color: Color(0xFF9E9E9E), height: 1.5),
+          ),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: onNavigateToCare,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: const Text(
+              'Go to My Medicines',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+            ),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF00897B),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Empty state: all tasks done for today ─────────────────────────────────────
+class _AllClearEmptyState extends StatelessWidget {
+  const _AllClearEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(32, 32, 32, 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle_rounded, size: 56, color: Color(0xFF66BB6A)),
+          SizedBox(height: 16),
+          Text(
+            "You're all set for today!",
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1A1A2E)),
+          ),
+          SizedBox(height: 6),
+          Text(
+            'All medicines logged. Great work!',
             textAlign: TextAlign.center,
             style: TextStyle(
                 fontSize: 13.5, color: Color(0xFF9E9E9E), height: 1.5),
