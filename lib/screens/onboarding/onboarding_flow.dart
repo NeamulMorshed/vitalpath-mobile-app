@@ -163,7 +163,7 @@ class _Page1ValueProp extends StatefulWidget {
 }
 
 class _Page1ValuePropState extends State<_Page1ValueProp>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _ctrl;
 
   // Staggered entry animations
